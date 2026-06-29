@@ -5,7 +5,7 @@ import assert from "node:assert/strict";
 import { writeFileSync, chmodSync, mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { register, egress, withEgress, verify, ip, WhisperError, firstAddr } from "../index.js";
+import { register, egress, withEgress, verify, verifyDetails, rdap, egressIp, ip, WhisperError, firstAddr } from "../index.js";
 
 // A fake `whisper` so tests exercise the real execFile path with no live box.
 const dir = mkdtempSync(join(tmpdir(), "wid-"));
@@ -59,9 +59,39 @@ test("withEgress restores env after the callback", async () => {
   assert.equal(process.env.HTTP_PROXY, undefined);
 });
 
-test("verify is true for a whisper agent, false otherwise", async () => {
+// verify/rdap/egressIp are keyless HTTP now — stub global fetch.
+function stubFetch(status, body) {
+  globalThis.fetch = async () => ({ status, json: async () => body });
+}
+
+test("verify is true for an agent (200), false for non-agent (404) and non-agent body", async () => {
+  stubFetch(200, { is_whisper_agent: true, operator: "tABC", dane_ok: true });
   assert.equal(await verify("2a04:2a01:1::1"), true);
+  stubFetch(404, { is_whisper_agent: false });
   assert.equal(await verify("2001:db8::1"), false);
+  stubFetch(200, { is_whisper_agent: false });
+  assert.equal(await verify("2001:db8::1"), false);
+});
+
+test("verifyDetails returns the verdict or null", async () => {
+  stubFetch(200, { is_whisper_agent: true, fqdn: "x.agents.whisper.online", jws_ok: true });
+  const d = await verifyDetails("2a04:2a01:1::1");
+  assert.equal(d.jws_ok, true);
+  stubFetch(404, {});
+  assert.equal(await verifyDetails("2001:db8::1"), null);
+});
+
+test("rdap returns the record or null; egressIp returns the ip", async () => {
+  stubFetch(200, { handle: "ag1", name: "scout", status: ["active"] });
+  assert.equal((await rdap("2a04:2a01:1::1")).name, "scout");
+  stubFetch(404, null);
+  assert.equal(await rdap("2001:db8::1"), null);
+  stubFetch(200, { ip: "2a04:2a01:1::a" });
+  assert.equal(await egressIp(), "2a04:2a01:1::a");
+});
+
+test("verify rejects an empty address", async () => {
+  await assert.rejects(() => verify("  "), WhisperError);
 });
 
 test("ip returns the address", async () => {

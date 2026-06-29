@@ -26,6 +26,27 @@ export function register(name: string, opts?: RegisterOptions): Promise<Agent>;
 export function egress(opts?: EgressOptions): Promise<Egress>;
 export function withEgress<T>(fn: (e: Egress) => Promise<T> | T): Promise<T>;
 export function withEgress<T>(opts: EgressOptions, fn: (e: Egress) => Promise<T> | T): Promise<T>;
+/** Full server-side verify verdict (keyless). */
+export interface VerifyVerdict {
+  is_whisper_agent: boolean;
+  fqdn?: string;
+  operator?: string;
+  tenant?: string;
+  dane_ok?: boolean;
+  jws_ok?: boolean;
+  verified_at?: number;
+  evidence?: unknown;
+  [k: string]: unknown;
+}
+
+/** Keyless, CLI-free: is `address` a real Whisper agent? (server-side DANE+DNSSEC+reverse-DNS+JWS) */
 export function verify(address: string, opts?: { timeout?: number }): Promise<boolean>;
+/** Keyless, CLI-free: the full verify verdict, or null if not an agent. */
+export function verifyDetails(address: string, opts?: { timeout?: number }): Promise<VerifyVerdict | null>;
+/** Keyless, CLI-free: the public RDAP record for a /128, or null. */
+export function rdap(address: string, opts?: { timeout?: number }): Promise<Record<string, unknown> | null>;
+/** Keyless, CLI-free: the caller's current egress IP (what this process leaves from). */
+export function egressIp(opts?: { timeout?: number }): Promise<string>;
+/** Your current egress IP via the CLI (proves your /128). */
 export function ip(opts?: { timeout?: number }): Promise<string>;
 export function firstAddr(obj: unknown): string | null;

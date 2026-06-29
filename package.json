@@ -1,6 +1,6 @@
 {
   "name": "whisper-id",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "A routable Whisper IPv6 identity and safe egress for any Node agent.",
   "type": "module",
   "exports": { ".": { "types": "./index.d.ts", "import": "./index.js" } },

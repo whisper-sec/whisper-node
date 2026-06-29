@@ -127,11 +127,63 @@ export async function withEgress(optsOrFn, maybeFn) {
   }
 }
 
-/** Return true iff `address` is a real Whisper agent (DANE+DNSSEC+reverse-DNS+JWS). Keyless. */
+// Keyless public endpoint base (the same surface the CLI uses, server-side). No key, no `whisper`
+// CLI — these work in any runtime that can fetch() (serverless, edge, browser). Override via env.
+function rdapBase() {
+  return (process.env.WHISPER_RDAP_URL || "https://rdap.whisper.online").replace(/\/+$/, "");
+}
+
+async function httpGetJson(url, { timeout = 60000 } = {}) {
+  const ctrl = new AbortController();
+  const t = setTimeout(() => ctrl.abort(), timeout);
+  let res;
+  try {
+    res = await fetch(url, { headers: { Accept: "application/rdap+json, application/json, */*", "User-Agent": "whisper-id-node/0.2.0" }, signal: ctrl.signal });
+  } catch (err) {
+    throw new WhisperError(`could not reach ${url}: ${err && err.message ? err.message : err}`);
+  } finally {
+    clearTimeout(t);
+  }
+  let body = null;
+  try {
+    body = await res.json();
+  } catch {
+    body = null;
+  }
+  return { status: res.status, body };
+}
+
+/**
+ * Return true iff `address` is a real Whisper agent. **Keyless and CLI-free** — one HTTPS GET to
+ * the public /verify-identity endpoint (server-side DANE+DNSSEC+reverse-DNS+JWS chain). Works in
+ * any runtime. 200 ⇒ agent, 404 ⇒ not. Throws only if the endpoint is unreachable.
+ */
 export async function verify(address, { timeout = 60000 } = {}) {
+  return (await verifyDetails(address, { timeout })) !== null;
+}
+
+/** Full verify verdict for a real agent (is_whisper_agent, fqdn, operator, tenant, dane_ok, jws_ok, …), else null. Keyless, CLI-free. */
+export async function verifyDetails(address, { timeout = 60000 } = {}) {
   if (!address || !address.trim()) throw new WhisperError("verify() needs an address");
-  const { code } = await run(["verify", address], { timeout, check: false });
-  return code === 0;
+  const url = `${rdapBase()}/verify-identity?ip=${encodeURIComponent(address.trim())}`;
+  const { status, body } = await httpGetJson(url, { timeout });
+  if (status !== 200 || !body || !body.is_whisper_agent) return null;
+  return body;
+}
+
+/** Public RDAP record for a Whisper /128 (handle, name, status, entities, …), or null. Keyless, CLI-free. */
+export async function rdap(address, { timeout = 60000 } = {}) {
+  if (!address || !address.trim()) throw new WhisperError("rdap() needs an address");
+  const url = `${rdapBase()}/ip/${encodeURI(address.trim())}`; // path segment — keep the literal colons
+  const { status, body } = await httpGetJson(url, { timeout });
+  return status === 200 ? body : null;
+}
+
+/** The caller's current egress IP as seen by Whisper (what this process leaves from). Keyless, CLI-free. */
+export async function egressIp({ timeout = 60000 } = {}) {
+  const { status, body } = await httpGetJson(`${rdapBase()}/egress-ip`, { timeout });
+  if (status !== 200) throw new WhisperError(`egress-ip endpoint returned HTTP ${status}`);
+  return (body && body.ip) || "";
 }
 
 /** Return the current egress IP, proving it is your Whisper /128. */

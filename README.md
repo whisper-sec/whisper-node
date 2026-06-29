@@ -25,7 +25,21 @@ await withEgress(async (e) => {
 | `egress({ agent, tier, setEnv })` | Bring up egress bound to your `/128`. → `Egress { port, proxyUrl, socksUrl, proxies, close() }`. `tier: "wireguard"` for a routed `/128`. Sets proxy env unless `setEnv:false`; call `close()` to restore. |
 | `withEgress([opts], fn)` | Run `fn(egress)` with egress up, restoring the environment afterwards. |
 | `verify(address)` | Keyless — is `address` a real Whisper agent? (DANE + DNSSEC + reverse-DNS + JWS) → `boolean` |
-| `ip()` | Your current egress IP, proving it's your `/128`. → `string` |
+| `verifyDetails(address)` | Keyless — the full verdict (`is_whisper_agent`, `fqdn`, `operator`, `dane_ok`, `jws_ok`, …) or `null` |
+| `rdap(address)` | Keyless — the public RDAP record for a `/128`, or `null` |
+| `egressIp()` | Keyless — the IP this process leaves from (a `/128` when routed, else the platform's) → `string` |
+| `ip()` | Your current egress IP via the CLI, proving it's your `/128`. → `string` |
+
+### Keyless / serverless (no CLI)
+
+`verify`, `verifyDetails`, `rdap`, and `egressIp` are **keyless** — pure HTTPS via `fetch`, **no `whisper` CLI and no key** — so they run in Cloudflare Workers, Vercel, Deno, Lambda, etc.:
+
+```js
+import { verify, rdap } from "whisper-id";
+if (await verify(addr)) console.log((await rdap(addr)).name);
+```
+
+`register`, `egress`, `withEgress`, and `ip` need the CLI on the host (egress needs the local proxy; register needs your key).
 
 ### Using it with `fetch`
 
