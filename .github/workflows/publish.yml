@@ -1,0 +1,21 @@
+name: Publish to npm
+on:
+  release:
+    types: [published]
+permissions:
+  contents: read
+  id-token: write   # required for npm --provenance
+jobs:
+  npm:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          registry-url: https://registry.npmjs.org
+      # Publishes when the NPM_TOKEN secret is set; runs only on a published release,
+      # so nothing fails before the token exists. --provenance signs the build.
+      - run: npm publish --provenance --access public
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
