@@ -11,6 +11,7 @@ const pexec = promisify(execFile);
 const ADDR_RE = /2a04:2a01:[0-9a-fA-F:]{2,}/; // the public Whisper agent prefix (AS219419)
 const HOSTPORT_RE = /127\.0\.0\.1:(\d{2,5})/;
 const PROXY_VARS = ["HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY", "http_proxy", "https_proxy", "all_proxy"];
+const UA = "whisper-id-node"; // client identifier for the keyless + control HTTP calls
 
 /** Error thrown when a `whisper` invocation fails, or the CLI is not installed. */
 export class WhisperError extends Error {
@@ -138,7 +139,7 @@ async function httpGetJson(url, { timeout = 60000 } = {}) {
   const t = setTimeout(() => ctrl.abort(), timeout);
   let res;
   try {
-    res = await fetch(url, { headers: { Accept: "application/rdap+json, application/json, */*", "User-Agent": "whisper-id-node/0.2.0" }, signal: ctrl.signal });
+    res = await fetch(url, { headers: { Accept: "application/rdap+json, application/json, */*", "User-Agent": UA }, signal: ctrl.signal });
   } catch (err) {
     throw new WhisperError(`could not reach ${url}: ${err && err.message ? err.message : err}`);
   } finally {
@@ -190,4 +191,266 @@ export async function egressIp({ timeout = 60000 } = {}) {
 export async function ip({ timeout = 60000 } = {}) {
   const env = await runJson(["ip"], { timeout });
   return getKey(env, "ip", "agent") || firstAddr(env) || "";
+}
+
+// ── Control plane (pure HTTP — no CLI) ──────────────────────────────────────────────
+// The governance half of the two-tier surface (Postel: keyless verify above works with no
+// key; these unlock with the caller's key). One control verb — `whisper.agents({op,args})`
+// — POSTed straight to the control endpoint. No `whisper` CLI, no child process, no key on
+// argv: works in any runtime with fetch() (serverless, edge, a plain server). The key is
+// read from opts.apiKey or $WHISPER_API_KEY and sent ONLY in the X-API-Key header.
+
+function controlUrl() {
+  return process.env.WHISPER_CONTROL_URL || "https://graph.whisper.security/api/query";
+}
+
+// Conservative-emit (RFC 761): render a value as a Cypher literal so no input — however
+// hostile — can break out of the map. A ' is doubled and a \ is doubled (order matters:
+// backslashes first). Mirrors the reference client's cypher builder byte-for-byte.
+function escapeCypher(s) {
+  return String(s).replace(/\\/g, "\\\\").replace(/'/g, "''");
+}
+function quoteCypher(s) {
+  return "'" + escapeCypher(s) + "'";
+}
+function lit(v) {
+  if (v === null || v === undefined) return "null";
+  if (typeof v === "string") return quoteCypher(v);
+  if (typeof v === "boolean") return v ? "true" : "false";
+  if (typeof v === "number") return Number.isFinite(v) ? String(v) : "null";
+  if (Array.isArray(v)) return "[" + v.map(lit).join(",") + "]";
+  if (typeof v === "object") return cypherMap(v);
+  return quoteCypher(String(v));
+}
+// A Cypher map literal with keys in SORTED order → the query is byte-stable. undefined
+// values are dropped so callers can pass a sparse args object.
+function cypherMap(m) {
+  const keys = Object.keys(m).filter((k) => m[k] !== undefined).sort();
+  if (keys.length === 0) return "{}";
+  return "{" + keys.map((k) => k + ":" + lit(m[k])).join(",") + "}";
+}
+function buildAgentsQuery(op, args) {
+  const inner = args && Object.keys(args).some((k) => args[k] !== undefined) ? cypherMap(args) : "{}";
+  return "CALL whisper.agents({op:" + quoteCypher(op) + ", args:" + inner + "})";
+}
+
+// Liberal-accept (RFC 761): decode BOTH documented envelope shapes into one normalised
+// { ok, status, result, error, retryAfter } — the flat {ok,status,result,error} dev shape
+// AND the live procedure-row table whose single row carries the per-op envelope — plus a
+// bare RFC-7807 problem object. Never throws on shape; a fault becomes error, not a crash.
+function decodeEnvelope(body, httpStatus) {
+  const out = { ok: false, status: httpStatus, result: null, error: null, retryAfter: null };
+  if (!body || typeof body !== "object") {
+    out.error = { status: httpStatus, detail: httpStatus >= 400 ? "control plane returned a non-JSON error reply" : "control plane returned an unexpected reply" };
+    return out;
+  }
+  const applyRow = (row) => {
+    out.ok = !!row.ok;
+    out.result = row.result || null;
+    out.error = row.error || null;
+    if (row.status) out.status = row.status;
+    if (row.retry_after != null) out.retryAfter = row.retry_after;
+    if (!out.ok && !out.error) out.error = { status: out.status, detail: "control plane reported failure" };
+    if (out.error && !out.error.status) out.error.status = out.status;
+    return out;
+  };
+  // Shape B — an explicit ok flag at the top level.
+  if (typeof body.ok === "boolean") return applyRow(body);
+  // Shape A — the procedure-row table: rows[0] carries {op,ok,status,result,error,…}. The
+  // row may be an object already, or a positional array aligned to top-level columns.
+  if (Array.isArray(body.rows) && body.rows.length > 0) {
+    let row0 = body.rows[0];
+    if (Array.isArray(row0) && Array.isArray(body.columns)) {
+      const obj = {};
+      body.columns.forEach((c, i) => { obj[c] = row0[i]; });
+      row0 = obj;
+    }
+    if (row0 && typeof row0 === "object" && !Array.isArray(row0)) {
+      if (typeof row0.ok === "boolean") return applyRow(row0);
+      if (row0.result) { out.ok = true; out.result = row0.result; return out; }
+    }
+  }
+  // A bare RFC-7807 problem object (no ok, no rows).
+  if (body.error || body.detail || body.title || body.type) {
+    out.error = body.error || { status: body.status || httpStatus, detail: body.detail, title: body.title, type: body.type };
+    if (!out.error.status) out.error.status = httpStatus;
+    return out;
+  }
+  // A top-level result, or a shapeless-but-valid table → success (read ops fail OPEN).
+  if (body.result) { out.ok = true; out.result = body.result; return out; }
+  if (Array.isArray(body.columns) || Array.isArray(body.rows)) {
+    out.ok = true; out.result = { columns: body.columns || [], rows: body.rows || [] }; return out;
+  }
+  if (httpStatus >= 400) { out.error = { status: httpStatus, detail: "control plane reported failure" }; return out; }
+  out.ok = true; out.result = { columns: [], rows: [] };
+  return out;
+}
+
+// Turn a {columns,rows} result into column-keyed records. Rows may be positional arrays
+// (aligned to columns) or already-keyed objects — both are accepted.
+function recordsFrom(result) {
+  if (!result || !Array.isArray(result.rows)) return [];
+  const cols = Array.isArray(result.columns) ? result.columns : [];
+  return result.rows.map((row) => {
+    if (!Array.isArray(row)) return row && typeof row === "object" ? row : { value: row };
+    const m = {};
+    cols.forEach((c, i) => { if (i < row.length) m[c] = row[i]; });
+    return m;
+  });
+}
+
+function resolveKey(opts) {
+  const key = (opts && opts.apiKey) || process.env.WHISPER_API_KEY;
+  return key && String(key).trim();
+}
+
+// The one place that talks to the control plane. Builds the injection-proof query, POSTs
+// it with the key in X-API-Key, decodes either envelope shape, and throws WhisperError
+// (carrying the server's helpful `detail`, plus .status/.retryAfter) on ok:false. The key
+// is never logged, never placed on argv, never returned.
+async function callControl(op, args, opts = {}) {
+  const key = resolveKey(opts);
+  if (!key) {
+    throw new WhisperError(
+      `\`${op}\` needs a Whisper API key — pass { apiKey } or set WHISPER_API_KEY. ` +
+        "(verify/verifyDetails/rdap are keyless and need no key.)"
+    );
+  }
+  const url = controlUrl();
+  const timeout = opts.timeout || 60000;
+  const ctrl = new AbortController();
+  const t = setTimeout(() => ctrl.abort(), timeout);
+  let res;
+  try {
+    res = await fetch(url, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Accept: "application/json",
+        "X-API-Key": key,
+        "User-Agent": UA,
+      },
+      body: JSON.stringify({ query: buildAgentsQuery(op, args || {}) }),
+      signal: ctrl.signal,
+    });
+  } catch (err) {
+    throw new WhisperError(`could not reach the Whisper control plane at ${url}: ${err && err.message ? err.message : err}`);
+  } finally {
+    clearTimeout(t);
+  }
+  let body = null;
+  try {
+    body = await res.json();
+  } catch {
+    body = null;
+  }
+  const env = decodeEnvelope(body, res.status);
+  if (!env.ok) {
+    const e = env.error || {};
+    const werr = new WhisperError(e.detail || e.title || e.type || `control plane returned HTTP ${env.status}`);
+    werr.status = env.status;
+    if (env.retryAfter != null) werr.retryAfter = env.retryAfter;
+    if (e.suggestions) werr.suggestions = e.suggestions;
+    throw werr;
+  }
+  return recordsFrom(env.result);
+}
+
+/**
+ * List your fleet (keyed control plane). `kind`: "agents" (default) | "identities" | "records".
+ * Liberal input: `list("identities")` or `list({ kind, apiKey })`. → an array of items
+ * (`{label, fqdn, address, agent, created, state}`), newest-first is up to the caller.
+ */
+export async function list(opts = {}) {
+  const o = typeof opts === "string" ? { kind: opts } : opts || {};
+  const recs = await callControl("list", { kind: o.kind || "agents" }, o);
+  // op:list rows are {kind,item}; unwrap to the item map when present.
+  return recs.map((r) => (r && typeof r.item === "object" && r.item !== null ? r.item : r));
+}
+
+/**
+ * Read or set your per-tenant DNS resolver policy (op:policy). NO policy fields ⇒ READ.
+ * To set: `policy({ default:"deny", block:["x.com"], allow:["y.com"] })`. → an array of
+ * `{ key, value }` rows (the effective policy).
+ */
+export async function policy(opts = {}) {
+  const o = opts || {};
+  const args = {};
+  if (o.default != null && o.default !== "") args.default = o.default;
+  if (Array.isArray(o.allow) && o.allow.length) args.allow = o.allow;
+  if (Array.isArray(o.block) && o.block.length) args.block = o.block;
+  return callControl("policy", args, o);
+}
+
+/**
+ * Query recent activity from warm storage (op:logs) — the poll counterpart of the live
+ * monitor. All filters optional: `{ agent, kind:"dns"|"conn"|"alloc", from, to, limit }`
+ * (from/to accept epoch-ms, RFC-3339, or relative like "-1h"). → an array of event records.
+ */
+export async function logs(opts = {}) {
+  const o = opts || {};
+  const args = {};
+  if (o.agent) args.agent = o.agent;
+  if (o.kind) args.kind = o.kind;
+  if (o.from != null && o.from !== "") args.from = o.from;
+  if (o.to != null && o.to !== "") args.to = o.to;
+  if (o.limit != null && Number(o.limit) > 0) args.limit = Number(o.limit);
+  return callControl("logs", args, o);
+}
+
+/**
+ * Fully revoke an agent — IRREVERSIBLE (op:revoke; needs admin:dns). Liberal input:
+ * `revoke("agent-id")`, `revoke("2a04:2a01:…")`, or `revoke({ agent, apiKey })`.
+ * → `{ status, … }`.
+ */
+export async function revoke(target, maybeOpts) {
+  const o = typeof target === "string" ? maybeOpts || {} : target || {};
+  const sel = typeof target === "string" ? target : o.agent;
+  if (!sel || !String(sel).trim()) throw new WhisperError("revoke() needs an agent id or /128 address");
+  const recs = await callControl("revoke", { agent: String(sel).trim() }, o);
+  const rec = recs.length ? recs[0] : {};
+  return { status: rec.status || rec.state || "submitted", ...rec };
+}
+
+/**
+ * Allocate your own /128 identity (op:identity): `identity({ label, contact_email })`.
+ * Release form: `identity({ release:true, address:"2a04:2a01:…" })`.
+ * → `{ agent, address, fqdn, ptr, state }`.
+ */
+export async function identity(opts = {}) {
+  const o = opts || {};
+  const args = {};
+  if (o.release) {
+    if (!o.address || !String(o.address).trim()) throw new WhisperError("identity({ release:true }) needs the address to release");
+    args.release = true;
+    args.address = String(o.address).trim();
+  } else {
+    if (!o.label || !String(o.label).trim()) throw new WhisperError("identity() needs a label (the agent's name)");
+    args.label = String(o.label).trim();
+    if (o.contact_email) args.contact_email = o.contact_email;
+  }
+  const recs = await callControl("identity", args, o);
+  return recs.length ? recs[0] : null;
+}
+
+/**
+ * One agent's detail + live counters (op:agent). Liberal input: `agent("2a04:2a01:…")`,
+ * `agent("agent-id")`, or `agent({ agent })` / `agent({ address })`. A value with a colon
+ * is treated as a /128 address. → the detail record, or null if not in your account.
+ */
+export async function agent(sel = {}, maybeOpts) {
+  const o = typeof sel === "string" ? maybeOpts || {} : sel || {};
+  const args = {};
+  if (typeof sel === "string") {
+    if (sel.includes(":")) args.address = sel.trim();
+    else args.agent = sel.trim();
+  } else if (o.address) {
+    args.address = String(o.address).trim();
+  } else if (o.agent) {
+    if (String(o.agent).includes(":")) args.address = String(o.agent).trim();
+    else args.agent = String(o.agent).trim();
+  }
+  if (!args.agent && !args.address) throw new WhisperError("agent() needs an agent id or /128 address");
+  const recs = await callControl("agent", args, o);
+  return recs.length ? recs[0] : null;
 }
