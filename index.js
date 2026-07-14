@@ -618,7 +618,7 @@ async function graphQuery(cypher, params, opts = {}) {
 
 // ── Flow runner (gallery/run, Server-Sent Events) ───────────────────────────────────
 // A flow entry is a multi-step read workflow orchestrated by the Whisper workflow runner:
-// POST {slug, inputs, params} to the gallery/run endpoint (keyed, X-API-Key) and consume
+// POST {slug, value, paramValues} to the gallery/run endpoint (keyed, X-API-Key) and consume
 // the SSE stream. Each `step` event carries a step's bound Cypher + rows; the terminal
 // `complete` event carries the aggregate context. callFlow() collects the whole stream and
 // resolves to { slug, steps, complete, events } - one call, the full flow.
@@ -652,6 +652,36 @@ function flowBody(m, input) {
   return { inputs, params };
 }
 
+// Map the routed { inputs, params } onto the runner's wire contract {slug, value, paramValues}:
+// `value` is the ONE primary entity (a host / IP / ASN), or `values` for a bulk list; the FIRST
+// input becomes the anchor `value`, and every other input plus every tuning knob rides in
+// `paramValues`. We send ONLY the keys the runner reads - an `inputs`/`params` map is silently
+// ignored, so the flow would fall back to its default anchor. A nullish input is skipped so the
+// flow's own default applies (Postel: sensible defaults, liberal in what we accept).
+function flowWireBody(m, input) {
+  const { inputs, params } = flowBody(m, input);
+  const paramValues = {};
+  let value;
+  let values;
+  let first = true;
+  for (const [name, val] of Object.entries(inputs)) {
+    if (val === undefined || val === null) continue;
+    if (first) {
+      if (Array.isArray(val)) values = val.map((x) => String(x));
+      else value = String(val);
+      first = false;
+    } else {
+      paramValues[name] = val;
+    }
+  }
+  for (const [k, v] of Object.entries(params)) paramValues[k] = v;
+  const body = { slug: m.slug };
+  if (value !== undefined) body.value = value;
+  if (values !== undefined) body.values = values;
+  if (Object.keys(paramValues).length > 0) body.paramValues = paramValues;
+  return body;
+}
+
 // Parse one SSE record ("event: x\ndata: {...}") into { event, data }; data is JSON-decoded
 // when possible, else kept as the raw string. Never throws on shape.
 function parseSseRecord(record) {
@@ -671,7 +701,7 @@ function parseSseRecord(record) {
 }
 
 // The one place that talks to the workflow runner. Requires a key (shared resolveKey),
-// POSTs {slug, inputs, params}, consumes the SSE stream, and resolves to the collected
+// POSTs {slug, value, paramValues}, consumes the SSE stream, and resolves to the collected
 // { slug, steps, complete, events }. Flows are multi-step, so the default timeout is 5
 // minutes (override with opts.timeout). On an HTTP error, an `error` event, or a stream
 // that ends with no result at all, throws a WhisperError with the server's clear detail.
@@ -683,7 +713,7 @@ async function callFlow(m, input, opts = {}) {
         "(verify/verifyDetails/rdap are keyless and need no key; flows run keyed on the workflow runner.)"
     );
   }
-  const { inputs, params } = flowBody(m, input);
+  const body = flowWireBody(m, input);
   const url = flowRunUrl();
   const timeout = opts.timeout || 300000;
   const ctrl = new AbortController();
@@ -699,7 +729,7 @@ async function callFlow(m, input, opts = {}) {
           "X-API-Key": key,
           "User-Agent": UA,
         },
-        body: JSON.stringify({ slug: m.slug, inputs, params }),
+        body: JSON.stringify(body),
         signal: ctrl.signal,
       });
     } catch (err) {

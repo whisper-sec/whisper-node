@@ -359,7 +359,7 @@ test("graph flow: a bare value binds the primary input and streams to {steps, co
   assert.equal(lastReq.init.method, "POST");
   assert.equal(lastReq.init.headers["X-API-Key"], "whisper_live_TESTKEY");
   assert.equal(lastReq.init.headers.Accept, "text/event-stream");
-  assert.deepEqual(lastReq.sent, { slug: "typosquat", inputs: { domain: "paypal.com" }, params: {} });
+  assert.deepEqual(lastReq.sent, { slug: "typosquat", value: "paypal.com" });
   // result: the collected stream
   assert.equal(res.slug, "typosquat");
   assert.equal(res.steps.length, 1);
@@ -369,14 +369,14 @@ test("graph flow: a bare value binds the primary input and streams to {steps, co
   assert.equal(res.events[0].event, "start");
 });
 
-test("graph flow: an object routes knob names to params and the rest to inputs", async () => {
+test("graph flow: a knob rides in paramValues and the primary input becomes value", async () => {
   stubFlow(sseStream.replaceAll("typosquat", "attack-surface"));
   await graph.attackSurface({ domain: "github.com", level: "deep" });
-  assert.deepEqual(lastReq.sent, { slug: "attack-surface", inputs: { domain: "github.com" }, params: { level: "deep" } });
-  // explicit { inputs, params } wrapper passes through untouched
+  assert.deepEqual(lastReq.sent, { slug: "attack-surface", value: "github.com", paramValues: { level: "deep" } });
+  // explicit { inputs, params } wrapper: first input -> value, the rest + knobs -> paramValues
   stubFlow(sseStream.replaceAll("typosquat", "attack-path"));
   await graph.attackPath({ inputs: { value: "paypal.com", other: "paypa1.com" }, params: { level: "quick" } });
-  assert.deepEqual(lastReq.sent, { slug: "attack-path", inputs: { value: "paypal.com", other: "paypa1.com" }, params: { level: "quick" } });
+  assert.deepEqual(lastReq.sent, { slug: "attack-path", value: "paypal.com", paramValues: { other: "paypa1.com", level: "quick" } });
 });
 
 test("graph flow: an HTTP error surfaces the runner's message as WhisperError", async () => {
