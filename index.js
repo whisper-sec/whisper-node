@@ -466,11 +466,12 @@ export async function agent(sel = {}, maybeOpts) {
 // where rows are already column-keyed objects), so it has its own choke point, callGraph().
 //
 // Source of truth for the 29 methods is the Whisper query catalog (catalog.json +
-// sdk-methods.json); the tables below are copied from it (keyed by exec.mode). A test
-// asserts the count so the two cannot silently drift. 14 `direct` entries run their catalog
-// Cypher against /api/query; 15 `flow` entries run via the workflow runner (run_workflow),
-// which is NOT a single /api/query Cypher, so they are shipped as clearly-noted stubs and
-// are not wired to an engine here. graph.query() is the raw escape hatch.
+// sdk-methods.json): the GRAPH_METHODS table below is GENERATED from it by
+// scripts/gen-graph.mjs (`npm run gen`), so this SDK cannot drift from the catalog. The
+// 14 `direct` entries run their catalog Cypher against /api/query; the 15 `flow` entries
+// EXECUTE on the workflow runner (POST gallery/run, Server-Sent Events) via callFlow().
+// Every method carries its canonical docs URL as `.docs`. graph.query() is the raw
+// escape hatch.
 
 function graphUrl() {
   // Defaults to the control endpoint, which already IS the graph endpoint. Override for tests
@@ -550,44 +551,45 @@ async function callGraph(cypher, params, opts = {}, methodName = "query") {
   return normalizeGraph(body);
 }
 
-// The 14 `direct` catalog entries: id (camelCased) -> its catalog Cypher. Every one binds a
-// single input as $v (paramName `v` in the catalog), except dbSchema (no input) and submit
-// (a write map, handled below). Copied verbatim from whisper-catalog/catalog.json.
-const GRAPH_DIRECT = {
-  identify: "CALL whisper.identify([$v]) YIELD host, vendor_id, canonical_name, category, roles, host_class, band",
-  assess: "CALL whisper.assess([$v]) YIELD host, label, band, sub_labels, coverage, evidence",
-  variants: "CALL whisper.variants($v) YIELD variant, method, exists, confidence",
-  walk: "CALL whisper.walk($v) YIELD coverage, host, nearest_known_vendors, no_atlas_match, siblings",
-  explain: "CALL whisper.explain($v) YIELD indicator, score, level, explanation, sources",
-  pslTldplusone: "CALL whisper.psl.tldPlusOne($v) YIELD apex",
-  pslAffiliation: "CALL whisper.psl.affiliation($v) YIELD found, suffix, submitterOrg, submitterLogin, evidenceKind, confidence",
-  origins: "CALL whisper.origins($v) YIELD ip, confidence, methods, asn, asnName, kind",
-  history: "CALL whisper.history($v)",
-  historyWhois: "CALL whisper.history.whois($v) YIELD queryTime, createDate, updateDate, expiryDate, registrar, registrant, country, nameServers",
-  asset: "CALL whisper.asSet($v) YIELD asSetName, memberAsn, sourceRir",
-  lookupTorRelay: "CALL whisper.lookupTorRelay($v) YIELD indicator, found, fingerprint, exitAddressCount, source, ingestedAt",
-};
-
-// The 15 `flow` catalog entries: id (camelCased) -> its runVia slug. These are multi-step
-// read workflows run by the console/agent workflow runner, NOT a single /api/query Cypher,
-// so they are not wired to an engine in this SDK. Copied verbatim from the catalog.
-const GRAPH_FLOW = {
-  anycastDnsRootSovereignty: "run_workflow (anycast-dns-root-sovereignty)",
-  attackPath: "run_workflow (attack-path)",
-  attackSurface: "run_workflow (attack-surface)",
-  bgpHijackExposure: "run_workflow (bgp-hijack-exposure)",
-  blastRadius: "run_workflow (blast-radius)",
-  buildTakedownEvidencePackage: "run_workflow (build-takedown-evidence-package)",
-  discoverAiAgentInfrastructure: "run_workflow (discover-ai-agent-infrastructure)",
-  indicator: "run_workflow (indicator)",
-  indicatorEnrichment: "run_workflow (indicator-enrichment)",
-  infrastructureMapping: "run_workflow (infrastructure-mapping)",
-  mapSupplyChainConcentration: "run_workflow (map-supply-chain-concentration)",
-  nameserverHijackDnsConsistency: "run_workflow (nameserver-hijack-dns-consistency)",
-  routeHealth: "run_workflow (route-health)",
-  subdomainTakeover: "run_workflow (subdomain-takeover)",
-  typosquat: "run_workflow (typosquat)",
-};
+// BEGIN GENERATED: graph catalog (scripts/gen-graph.mjs) - do not edit by hand
+// The Whisper query catalog, one row per entry (14 direct + 15 flow), in catalog order.
+// A direct row carries its catalog Cypher (input bound as a $-parameter); a flow row
+// carries its gallery/run slug plus the input/param names the workflow runner accepts;
+// the map-call row (submit) enumerates its fields. `docs` is the canonical docs URL.
+const GRAPH_DOCS_BASE = "https://www.whisper.security";
+const GRAPH_FLOW_RUN_URL = "https://console.whisper.security/api/gallery/run";
+const GRAPH_METHODS = [
+  { name: "anycastDnsRootSovereignty", mode: "flow", slug: "anycast-dns-root-sovereignty", primary: "country", inputs: ["country"], params: ["instanceType"], docs: GRAPH_DOCS_BASE + "/docs/recipes/compliance" },
+  { name: "attackPath", mode: "flow", slug: "attack-path", primary: "value", inputs: ["value", "other"], params: ["level"], docs: GRAPH_DOCS_BASE + "/docs/recipes/attack-path" },
+  { name: "attackSurface", mode: "flow", slug: "attack-surface", primary: "domain", inputs: ["domain"], params: ["level"], docs: GRAPH_DOCS_BASE + "/docs/recipes/pentest-recon" },
+  { name: "bgpHijackExposure", mode: "flow", slug: "bgp-hijack-exposure", primary: "value", inputs: ["value"], params: [], docs: GRAPH_DOCS_BASE + "/docs/recipes/bgp-routing" },
+  { name: "blastRadius", mode: "flow", slug: "blast-radius", primary: "indicator", inputs: ["indicator"], params: ["depth"], docs: GRAPH_DOCS_BASE + "/docs/recipes/soc" },
+  { name: "buildTakedownEvidencePackage", mode: "flow", slug: "build-takedown-evidence-package", primary: "domain", inputs: ["domain"], params: [], docs: GRAPH_DOCS_BASE + "/docs/recipes/threat-intel" },
+  { name: "discoverAiAgentInfrastructure", mode: "flow", slug: "discover-ai-agent-infrastructure", primary: "value", inputs: ["value"], params: [], docs: GRAPH_DOCS_BASE + "/docs/recipes/pentest-recon" },
+  { name: "indicator", mode: "flow", slug: "indicator", primary: "indicator", inputs: ["indicator"], params: [], docs: GRAPH_DOCS_BASE + "/docs/recipes/soc" },
+  { name: "indicatorEnrichment", mode: "flow", slug: "indicator-enrichment", primary: "value", inputs: ["value"], params: [], docs: GRAPH_DOCS_BASE + "/docs/recipes/dns-email" },
+  { name: "infrastructureMapping", mode: "flow", slug: "infrastructure-mapping", primary: "value", inputs: ["value"], params: ["level"], docs: GRAPH_DOCS_BASE + "/docs/recipes/compliance" },
+  { name: "mapSupplyChainConcentration", mode: "flow", slug: "map-supply-chain-concentration", primary: "domain", inputs: ["domain"], params: [], docs: GRAPH_DOCS_BASE + "/docs/recipes/compliance" },
+  { name: "nameserverHijackDnsConsistency", mode: "flow", slug: "nameserver-hijack-dns-consistency", primary: "value", inputs: ["value"], params: [], docs: GRAPH_DOCS_BASE + "/docs/recipes/dns-email" },
+  { name: "routeHealth", mode: "flow", slug: "route-health", primary: "target", inputs: ["target"], params: [], docs: GRAPH_DOCS_BASE + "/docs/recipes/bgp-routing" },
+  { name: "subdomainTakeover", mode: "flow", slug: "subdomain-takeover", primary: "value", inputs: ["value"], params: [], docs: GRAPH_DOCS_BASE + "/docs/recipes/pentest-recon" },
+  { name: "typosquat", mode: "flow", slug: "typosquat", primary: "domain", inputs: ["domain"], params: [], docs: GRAPH_DOCS_BASE + "/docs/recipes/brand-protection" },
+  { name: "identify", mode: "direct", input: "v", cypher: "CALL whisper.identify([$v]) YIELD host, vendor_id, canonical_name, category, roles, host_class, band", docs: GRAPH_DOCS_BASE + "/docs/whisper-graph/procedures/identify" },
+  { name: "assess", mode: "direct", input: "v", cypher: "CALL whisper.assess([$v]) YIELD host, label, band, sub_labels, coverage, evidence", docs: GRAPH_DOCS_BASE + "/docs/whisper-graph/procedures" },
+  { name: "variants", mode: "direct", input: "v", cypher: "CALL whisper.variants($v) YIELD variant, method, exists, confidence", docs: GRAPH_DOCS_BASE + "/docs/whisper-graph/procedures/variants" },
+  { name: "walk", mode: "direct", input: "v", cypher: "CALL whisper.walk($v) YIELD coverage, host, nearest_known_vendors, no_atlas_match, siblings", docs: GRAPH_DOCS_BASE + "/docs/whisper-graph/procedures" },
+  { name: "explain", mode: "direct", input: "v", cypher: "CALL whisper.explain($v) YIELD indicator, score, level, explanation, sources", docs: GRAPH_DOCS_BASE + "/docs/whisper-graph/procedures/explain" },
+  { name: "pslTldplusone", mode: "direct", input: "v", cypher: "CALL whisper.psl.tldPlusOne($v) YIELD apex", docs: GRAPH_DOCS_BASE + "/docs/whisper-graph/procedures/helpers" },
+  { name: "pslAffiliation", mode: "direct", input: "v", cypher: "CALL whisper.psl.affiliation($v) YIELD found, suffix, submitterOrg, submitterLogin, evidenceKind, confidence", docs: GRAPH_DOCS_BASE + "/docs/whisper-graph/procedures/helpers" },
+  { name: "origins", mode: "direct", input: "v", cypher: "CALL whisper.origins($v) YIELD ip, confidence, methods, asn, asnName, kind", docs: GRAPH_DOCS_BASE + "/docs/whisper-graph/procedures/origins" },
+  { name: "history", mode: "direct", input: "v", cypher: "CALL whisper.history($v)", docs: GRAPH_DOCS_BASE + "/docs/whisper-graph/procedures/history" },
+  { name: "historyWhois", mode: "direct", input: "v", cypher: "CALL whisper.history.whois($v) YIELD queryTime, createDate, updateDate, expiryDate, registrar, registrant, country, nameServers", docs: GRAPH_DOCS_BASE + "/docs/whisper-graph/procedures/history" },
+  { name: "asset", mode: "direct", input: "v", cypher: "CALL whisper.asSet($v) YIELD asSetName, memberAsn, sourceRir", docs: GRAPH_DOCS_BASE + "/docs/whisper-graph/procedures" },
+  { name: "lookupTorRelay", mode: "direct", input: "v", cypher: "CALL whisper.lookupTorRelay($v) YIELD indicator, found, fingerprint, exitAddressCount, source, ingestedAt", docs: GRAPH_DOCS_BASE + "/docs/whisper-graph/procedures/helpers" },
+  { name: "dbSchema", mode: "direct", input: null, cypher: "CALL db.schema()", docs: GRAPH_DOCS_BASE + "/docs/whisper-graph/schema" },
+  { name: "submit", mode: "direct", proc: "whisper.submit", fields: [["kind", "kind"], ["identifierKind", "identifier_kind"], ["value", "value"], ["observationId", "observation_id"], ["confidence", "confidence"], ["firstSeen", "first_seen"], ["provenance", "provenance"], ["query", "query"], ["results", "results"], ["comment", "comment"], ["severity", "severity"], ["v", "v"]], requires: ["kind"], docs: GRAPH_DOCS_BASE + "/docs/cypher-api" },
+];
+// END GENERATED: graph catalog
 
 // Coerce a liberal first arg into the string value bound as $v. Accepts a bare value or a
 // { value } / { v } wrapper; empty is rejected with a clear error, never an opaque failure.
@@ -607,48 +609,225 @@ function graphValue(name, value) {
  * Run raw Cypher against the Whisper Security graph (keyed). The escape hatch under every
  * typed method: `graph.query("MATCH (n) RETURN n LIMIT 1", {}, { apiKey })`. Returns the
  * full `{ columns, rows, statistics }` (rows are objects keyed by column name).
+ * @see https://www.whisper.security/docs/cypher-api
  */
 async function graphQuery(cypher, params, opts = {}) {
   if (!cypher || !String(cypher).trim()) throw new WhisperError("graph.query() needs a Cypher string");
   return callGraph(String(cypher), params || {}, opts, "query");
 }
 
-// Build the namespace: query + a typed method per catalog entry. Direct methods run their
-// Cypher; flow methods throw a clear, honest "runs via the workflow runner, not wired here"
-// error (never a silent no-op) and carry .runVia for programmatic inspection.
-const graph = { query: graphQuery };
+// ── Flow runner (gallery/run, Server-Sent Events) ───────────────────────────────────
+// A flow entry is a multi-step read workflow orchestrated by the Whisper workflow runner:
+// POST {slug, inputs, params} to the gallery/run endpoint (keyed, X-API-Key) and consume
+// the SSE stream. Each `step` event carries a step's bound Cypher + rows; the terminal
+// `complete` event carries the aggregate context. callFlow() collects the whole stream and
+// resolves to { slug, steps, complete, events } - one call, the full flow.
 
-for (const [name, cypher] of Object.entries(GRAPH_DIRECT)) {
-  graph[name] = async (value, opts = {}) => callGraph(cypher, { v: graphValue(name, value) }, opts, name);
+function flowRunUrl() {
+  return process.env.WHISPER_FLOW_URL || GRAPH_FLOW_RUN_URL;
 }
 
-/** List every node and relationship type in the graph with counts and examples (keyed). No input. */
-graph.dbSchema = async (opts = {}) => callGraph("CALL db.schema()", {}, opts, "dbSchema");
-
-/**
- * Contribute an indicator observation or feedback back into the graph (keyed WRITE). Pass
- * `{ kind: "indicator" | "feedback", ...fields }`. The payload is bound as a single Cypher
- * parameter (injection-safe). The server enforces its own write scopes and rejects anonymous
- * callers, so a scope/quota fault surfaces as the server's WhisperError detail.
- */
-graph.submit = async (payload, opts = {}) => {
-  const p = payload && typeof payload === "object" && !Array.isArray(payload) ? payload : {};
-  if (!p.kind || String(p.kind).trim() === "") {
-    throw new WhisperError("graph.submit() needs a { kind } of 'indicator' or 'feedback' (plus its fields)");
+// Liberal-accept (RFC 761): coerce the caller's input into the runner's {inputs, params}.
+// A bare value binds to the flow's primary input; a plain object routes each key by name
+// (a known knob name goes to params, everything else to inputs); an explicit
+// { inputs, params } wrapper passes through untouched.
+function flowBody(m, input) {
+  const inputs = {};
+  const params = {};
+  if (input === null || input === undefined) return { inputs, params };
+  if (typeof input !== "object" || Array.isArray(input)) {
+    const v = String(input).trim();
+    if (v === "") throw new WhisperError(`graph.${m.name}() needs a value for its \`${m.primary}\` input (a host, IP, domain, ASN, or prefix)`);
+    inputs[m.primary] = v;
+    return { inputs, params };
   }
-  return callGraph("CALL whisper.submit($submission)", { submission: p }, opts, "submit");
-};
+  if ((input.inputs && typeof input.inputs === "object") || (input.params && typeof input.params === "object")) {
+    return { inputs: { ...(input.inputs || {}) }, params: { ...(input.params || {}) } };
+  }
+  for (const [k, v] of Object.entries(input)) {
+    if (v === undefined) continue;
+    if (m.params.includes(k)) params[k] = v;
+    else inputs[k] = v;
+  }
+  return { inputs, params };
+}
 
-for (const [name, runVia] of Object.entries(GRAPH_FLOW)) {
-  graph[name] = () => {
-    const err = new WhisperError(
-      `graph.${name}() is a multi-step read workflow: it runs via the Whisper workflow runner ` +
-        `(${runVia}), not a single /api/query Cypher, and is not wired into this SDK yet. Use ` +
-        "graph.query() for a raw Cypher call, or run the workflow via the console/agent runner."
+// Parse one SSE record ("event: x\ndata: {...}") into { event, data }; data is JSON-decoded
+// when possible, else kept as the raw string. Never throws on shape.
+function parseSseRecord(record) {
+  let event = "message";
+  const dataLines = [];
+  for (const line of record.split("\n")) {
+    if (line.startsWith("event:")) event = line.slice(6).trim();
+    else if (line.startsWith("data:")) dataLines.push(line.slice(5).replace(/^ /, ""));
+  }
+  let data = dataLines.join("\n");
+  try {
+    data = JSON.parse(data);
+  } catch {
+    // not JSON - keep the raw string
+  }
+  return { event, data };
+}
+
+// The one place that talks to the workflow runner. Requires a key (shared resolveKey),
+// POSTs {slug, inputs, params}, consumes the SSE stream, and resolves to the collected
+// { slug, steps, complete, events }. Flows are multi-step, so the default timeout is 5
+// minutes (override with opts.timeout). On an HTTP error, an `error` event, or a stream
+// that ends with no result at all, throws a WhisperError with the server's clear detail.
+async function callFlow(m, input, opts = {}) {
+  const key = resolveKey(opts);
+  if (!key) {
+    throw new WhisperError(
+      `\`graph.${m.name}\` needs a Whisper API key: pass { apiKey } or set WHISPER_API_KEY. ` +
+        "(verify/verifyDetails/rdap are keyless and need no key; flows run keyed on the workflow runner.)"
     );
-    err.runVia = runVia;
-    return Promise.reject(err);
+  }
+  const { inputs, params } = flowBody(m, input);
+  const url = flowRunUrl();
+  const timeout = opts.timeout || 300000;
+  const ctrl = new AbortController();
+  const t = setTimeout(() => ctrl.abort(), timeout);
+  try {
+    let res;
+    try {
+      res = await fetch(url, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Accept: "text/event-stream",
+          "X-API-Key": key,
+          "User-Agent": UA,
+        },
+        body: JSON.stringify({ slug: m.slug, inputs, params }),
+        signal: ctrl.signal,
+      });
+    } catch (err) {
+      throw new WhisperError(`could not reach the Whisper workflow runner at ${url}: ${err && err.message ? err.message : err}`);
+    }
+    if (res.status >= 400) {
+      let body = null;
+      try {
+        body = await res.json();
+      } catch {
+        body = null;
+      }
+      const e = body && typeof body === "object" ? body : {};
+      const werr = new WhisperError(
+        e.message || e.detail || (typeof e.error === "string" ? e.error : null) || `the workflow runner returned HTTP ${res.status}`
+      );
+      werr.status = res.status;
+      throw werr;
+    }
+    // Liberal accept: a plain-JSON reply (no stream) is decoded as the complete result.
+    const ct = res.headers && typeof res.headers.get === "function" ? res.headers.get("content-type") || "" : "";
+    if (ct.includes("json")) {
+      let body = null;
+      try {
+        body = await res.json();
+      } catch {
+        body = null;
+      }
+      return { slug: m.slug, steps: [], complete: body && typeof body === "object" ? body : null, events: [] };
+    }
+    // The SSE stream: split records on blank lines (CRLF-safe), decode each.
+    const events = [];
+    const decoder = new TextDecoder("utf-8");
+    let buf = "";
+    const drain = () => {
+      buf = buf.replace(/\r\n/g, "\n");
+      let i;
+      while ((i = buf.indexOf("\n\n")) !== -1) {
+        const rec = buf.slice(0, i);
+        buf = buf.slice(i + 2);
+        if (rec.trim() !== "") events.push(parseSseRecord(rec));
+      }
+    };
+    for await (const chunk of res.body) {
+      buf += decoder.decode(chunk, { stream: true });
+      drain();
+    }
+    buf += decoder.decode();
+    drain();
+    if (buf.trim() !== "") events.push(parseSseRecord(buf));
+    const steps = events.filter((ev) => ev.event === "step").map((ev) => ev.data);
+    const completeEv = events.findLast((ev) => ev.event === "complete");
+    const complete = completeEv && completeEv.data && typeof completeEv.data === "object" ? completeEv.data : null;
+    const errEv = events.find((ev) => ev.event === "error");
+    if (errEv && !complete) {
+      const d = errEv.data && typeof errEv.data === "object" ? errEv.data : { detail: String(errEv.data || "") };
+      const werr = new WhisperError(d.message || d.detail || (typeof d.error === "string" ? d.error : null) || `graph.${m.name} failed on the workflow runner`);
+      werr.events = events;
+      throw werr;
+    }
+    if (!complete && steps.length === 0) {
+      const werr = new WhisperError(`graph.${m.name}: the flow stream ended without a step or complete event`);
+      werr.events = events;
+      throw werr;
+    }
+    return { slug: m.slug, steps, complete, events };
+  } catch (err) {
+    if (err instanceof WhisperError) throw err;
+    if ((err && err.name === "AbortError") || ctrl.signal.aborted) {
+      throw new WhisperError(`graph.${m.name} timed out after ${timeout}ms (flows are multi-step; raise { timeout } if you need longer)`);
+    }
+    throw new WhisperError(`graph.${m.name} failed while streaming from the workflow runner: ${err && err.message ? err.message : err}`);
+  } finally {
+    clearTimeout(t);
+  }
+}
+
+// The map-call write (whisper.submit): each payload field becomes one entry of a Cypher
+// map with its value bound as its own $-parameter (injection-safe), keys in SORTED order
+// so the query is byte-stable. Field names are accepted in both catalog spellings
+// (camelCase id or snake_case paramName) and normalised to the wire form; any extra key
+// must be a plain identifier, and the server validates the full set per kind.
+function makeMapCall(m) {
+  const canon = new Map();
+  for (const [id, param] of m.fields) {
+    canon.set(id, param);
+    canon.set(param, param);
+  }
+  return async (payload, opts = {}) => {
+    const p = payload && typeof payload === "object" && !Array.isArray(payload) ? payload : {};
+    const bound = {};
+    for (const [k, v] of Object.entries(p)) {
+      if (v === undefined) continue;
+      const name = canon.get(k) || k;
+      if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(name)) {
+        throw new WhisperError(`graph.${m.name}() field ${JSON.stringify(k)} is not a valid field name (letters, digits, _)`);
+      }
+      bound[name] = v;
+    }
+    for (const req of m.requires) {
+      if (bound[req] === null || bound[req] === undefined || String(bound[req]).trim() === "") {
+        throw new WhisperError(`graph.${m.name}() needs a { ${req} } of 'indicator' or 'feedback' (plus its fields)`);
+      }
+    }
+    const keys = Object.keys(bound).sort();
+    const cypher = `CALL ${m.proc}({` + keys.map((k) => `${k}:$${k}`).join(", ") + "})";
+    return callGraph(cypher, bound, opts, m.name);
   };
+}
+
+// Build the namespace from the generated catalog table: query + one method per entry.
+// Direct methods run their catalog Cypher; the map-call write builds its parameter map;
+// flow methods execute on the workflow runner. Every method carries its canonical docs
+// URL as `.docs` (docsBase + the entry's docPath).
+const graph = { query: graphQuery };
+graph.query.docs = GRAPH_DOCS_BASE + "/docs/cypher-api";
+
+for (const m of GRAPH_METHODS) {
+  if (m.mode === "flow") {
+    graph[m.name] = async (input, opts = {}) => callFlow(m, input, opts);
+  } else if (m.fields) {
+    graph[m.name] = makeMapCall(m);
+  } else if (m.input) {
+    graph[m.name] = async (value, opts = {}) => callGraph(m.cypher, { [m.input]: graphValue(m.name, value) }, opts, m.name);
+  } else {
+    graph[m.name] = async (opts = {}) => callGraph(m.cypher, {}, opts, m.name);
+  }
+  graph[m.name].docs = m.docs;
 }
 
 export { graph };
