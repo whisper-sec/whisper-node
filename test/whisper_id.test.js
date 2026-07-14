@@ -270,12 +270,21 @@ test("graph.dbSchema: no input, empty parameters", async () => {
   assert.equal(res.rows[0].name, "HOSTNAME");
 });
 
-test("graph.submit: binds the payload as a single map parameter; needs a kind", async () => {
+test("graph.submit: builds the catalog map-call with SORTED $-bound fields; needs a kind", async () => {
   stubControl(200, { columns: ["status"], rows: [{ status: "accepted" }] });
-  await graph.submit({ kind: "indicator", indicator: "evil.example", note: "phish" });
-  assert.match(lastReq.sent.query, /CALL whisper\.submit\(\$submission\)/);
-  assert.deepEqual(lastReq.sent.parameters, { submission: { kind: "indicator", indicator: "evil.example", note: "phish" } });
-  await assert.rejects(() => graph.submit({ indicator: "x" }), WhisperError); // no kind
+  await graph.submit({ kind: "indicator", identifier_kind: "ip", value: "203.0.113.5" });
+  assert.equal(lastReq.sent.query, "CALL whisper.submit({identifier_kind:$identifier_kind, kind:$kind, value:$value})");
+  assert.deepEqual(lastReq.sent.parameters, { kind: "indicator", identifier_kind: "ip", value: "203.0.113.5" });
+  await assert.rejects(() => graph.submit({ value: "x" }), WhisperError); // no kind
+});
+
+test("graph.submit: accepts camelCase field spellings and normalises them to the wire form", async () => {
+  stubControl(200, { columns: ["status"], rows: [{ status: "accepted" }] });
+  await graph.submit({ kind: "feedback", observationId: "obs-1", comment: "false positive" });
+  assert.equal(lastReq.sent.query, "CALL whisper.submit({comment:$comment, kind:$kind, observation_id:$observation_id})");
+  assert.deepEqual(lastReq.sent.parameters, { kind: "feedback", observation_id: "obs-1", comment: "false positive" });
+  // a hostile field name can never reach the Cypher
+  await assert.rejects(() => graph.submit({ kind: "indicator", "x}) CALL evil(": 1 }), WhisperError);
 });
 
 test("graph.query: raw escape hatch passes cypher + params through", async () => {
@@ -319,11 +328,79 @@ test("graph: a server error body throws WhisperError carrying detail + status", 
   );
 });
 
-test("graph: a flow method rejects with a clear runs-via-workflow-runner note (not wired)", async () => {
+// ── Flow methods (gallery/run, Server-Sent Events) ──────────────────────────────────
+// A capturing fetch stub that streams an SSE body, like the live workflow runner.
+function stubFlow(text, { status = 200, contentType = "text/event-stream; charset=utf-8" } = {}) {
+  lastReq = null;
+  globalThis.fetch = async (url, init) => {
+    lastReq = { url, init, sent: init && init.body ? JSON.parse(init.body) : null };
+    return {
+      status,
+      headers: { get: (h) => (h.toLowerCase() === "content-type" ? contentType : null) },
+      body: (async function* () {
+        yield new TextEncoder().encode(text);
+      })(),
+      json: async () => JSON.parse(text),
+    };
+  };
+}
+
+const sseStream =
+  'event: start\ndata: {"slug":"typosquat"}\n\n' +
+  'event: step-start\ndata: {"id":"registered","index":0}\n\n' +
+  'event: step\ndata: {"id":"registered","status":"done","columns":["variant"],"rows":[{"variant":"paypa1.com"}]}\n\n' +
+  'event: complete\ndata: {"slug":"typosquat","totalLatencyMs":9562,"context":{"registered":[{"variant":"paypa1.com"}]}}\n\n';
+
+test("graph flow: a bare value binds the primary input and streams to {steps, complete, events}", async () => {
+  stubFlow(sseStream);
+  const res = await graph.typosquat("paypal.com");
+  // request shape: the gallery/run contract
+  assert.equal(lastReq.url, "https://console.whisper.security/api/gallery/run");
+  assert.equal(lastReq.init.method, "POST");
+  assert.equal(lastReq.init.headers["X-API-Key"], "whisper_live_TESTKEY");
+  assert.equal(lastReq.init.headers.Accept, "text/event-stream");
+  assert.deepEqual(lastReq.sent, { slug: "typosquat", inputs: { domain: "paypal.com" }, params: {} });
+  // result: the collected stream
+  assert.equal(res.slug, "typosquat");
+  assert.equal(res.steps.length, 1);
+  assert.equal(res.steps[0].rows[0].variant, "paypa1.com");
+  assert.equal(res.complete.totalLatencyMs, 9562);
+  assert.equal(res.events.length, 4);
+  assert.equal(res.events[0].event, "start");
+});
+
+test("graph flow: an object routes knob names to params and the rest to inputs", async () => {
+  stubFlow(sseStream.replaceAll("typosquat", "attack-surface"));
+  await graph.attackSurface({ domain: "github.com", level: "deep" });
+  assert.deepEqual(lastReq.sent, { slug: "attack-surface", inputs: { domain: "github.com" }, params: { level: "deep" } });
+  // explicit { inputs, params } wrapper passes through untouched
+  stubFlow(sseStream.replaceAll("typosquat", "attack-path"));
+  await graph.attackPath({ inputs: { value: "paypal.com", other: "paypa1.com" }, params: { level: "quick" } });
+  assert.deepEqual(lastReq.sent, { slug: "attack-path", inputs: { value: "paypal.com", other: "paypa1.com" }, params: { level: "quick" } });
+});
+
+test("graph flow: an HTTP error surfaces the runner's message as WhisperError", async () => {
+  stubFlow('{"error":"FlowNotFound","message":"No runnable flow for slug \\"x\\"."}', { status: 404, contentType: "application/json" });
   await assert.rejects(
-    () => graph.attackPath(),
-    (err) => err instanceof WhisperError && /workflow runner/.test(err.message) && err.runVia === "run_workflow (attack-path)"
+    () => graph.blastRadius("ns1.example.com"),
+    (err) => err instanceof WhisperError && /No runnable flow/.test(err.message) && err.status === 404
   );
+});
+
+test("graph flow: an error event with no complete rejects with the detail (events kept)", async () => {
+  stubFlow('event: start\ndata: {"slug":"route-health"}\n\nevent: error\ndata: {"message":"step 2 failed"}\n\n');
+  await assert.rejects(
+    () => graph.routeHealth("1.1.1.0/24"),
+    (err) => err instanceof WhisperError && err.message === "step 2 failed" && err.events.length === 2
+  );
+});
+
+test("graph flow: needs a key, and an empty bare input is rejected with a clear error", async () => {
+  const saved = process.env.WHISPER_API_KEY;
+  delete process.env.WHISPER_API_KEY;
+  await assert.rejects(() => graph.typosquat("paypal.com"), /needs a Whisper API key/);
+  process.env.WHISPER_API_KEY = saved;
+  await assert.rejects(() => graph.typosquat("  "), /needs a value/);
 });
 
 test("graph namespace has exactly the 29 catalog methods + query (drift guard)", () => {
@@ -331,5 +408,12 @@ test("graph namespace has exactly the 29 catalog methods + query (drift guard)",
   assert.equal(names.length, 30); // 14 direct + 15 flow + query
   for (const m of ["query", "identify", "assess", "dbSchema", "submit", "typosquat", "attackPath"]) {
     assert.ok(names.includes(m), `missing graph.${m}`);
+  }
+});
+
+test("graph: every method carries its canonical docs URL as .docs (docsBase + docPath)", () => {
+  for (const [name, fn] of Object.entries(graph)) {
+    if (typeof fn !== "function") continue;
+    assert.match(fn.docs, /^https:\/\/www\.whisper\.security\/docs\//, `graph.${name} has no docs link`);
   }
 });

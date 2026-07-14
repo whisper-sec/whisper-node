@@ -109,9 +109,21 @@ await graph.query("MATCH (n) RETURN n LIMIT $lim", { lim: 5 });  // raw Cypher e
 | `graph.query(cypher, params)` | Raw Cypher escape hatch. → the full `{ columns, rows, statistics }` |
 
 Fifteen multi-step **workflow** methods (`attackPath`, `attackSurface`, `blastRadius`, `typosquat`,
-`indicator`, `routeHealth`, and 9 more) run via the Whisper workflow runner, not a single Cypher
-call, so they are not wired into this SDK yet: calling one rejects with a clear `WhisperError`
-(carrying `.runVia`) telling you which workflow to run. Use `graph.query` for raw Cypher meanwhile.
+`indicator`, `routeHealth`, and 9 more) execute on the Whisper workflow runner and stream
+Server-Sent Events; one call collects the whole run into `{ slug, steps, complete, events }`:
+
+```js
+const run = await graph.typosquat("paypal.com");   // bare value → the flow's primary input
+console.log(run.steps.length, "steps");            // each step: its bound Cypher, columns, rows
+console.log(run.complete.totalLatencyMs, "ms");    // the terminal aggregate context
+
+await graph.attackSurface({ domain: "github.com", level: "deep" });  // named inputs + knobs
+```
+
+Every `graph` method is generated from the Whisper query catalog (never hand-copied, so it
+cannot drift) and links its canonical docs: `graph.identify.docs` →
+`https://www.whisper.security/docs/whisper-graph/procedures/identify`, and the same URL is on
+each method's `@see` tag in your editor.
 
 ### Egress + CLI-backed
 
