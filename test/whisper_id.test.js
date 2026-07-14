@@ -5,7 +5,7 @@ import assert from "node:assert/strict";
 import { writeFileSync, chmodSync, mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { register, egress, withEgress, verify, verifyDetails, rdap, egressIp, ip, WhisperError, firstAddr, list, policy, logs, revoke, identity, agent } from "../index.js";
+import { register, egress, withEgress, verify, verifyDetails, rdap, egressIp, ip, WhisperError, firstAddr, list, policy, logs, revoke, identity, agent, graph } from "../index.js";
 
 // A fake `whisper` so tests exercise the real execFile path with no live box.
 const dir = mkdtempSync(join(tmpdir(), "wid-"));
@@ -59,7 +59,7 @@ test("withEgress restores env after the callback", async () => {
   assert.equal(process.env.HTTP_PROXY, undefined);
 });
 
-// verify/rdap/egressIp are keyless HTTP now — stub global fetch.
+// verify/rdap/egressIp are keyless HTTP now, so stub global fetch.
 function stubFetch(status, body) {
   globalThis.fetch = async () => ({ status, json: async () => body });
 }
@@ -223,4 +223,113 @@ test("control calls require a key (opts.apiKey or WHISPER_API_KEY)", async () =>
 
 test("revoke rejects an empty selector", async () => {
   await assert.rejects(() => revoke("  "), WhisperError);
+});
+
+// ── Graph namespace (keyed Cypher, /api/query contract) ─────────────────────────────
+// The graph envelope: {columns, rows:[{col:val}], statistics}. Rows are already keyed
+// objects (NOT the whisper.agents row-envelope). stubControl (above) captures lastReq.
+const graphEnvelope = {
+  columns: ["host", "vendor_id", "canonical_name"],
+  rows: [{ host: "api.openai.com", vendor_id: "openai", canonical_name: "OpenAI" }],
+  statistics: { rowCount: 1, executionTimeMs: 7 },
+};
+
+test("graph.identify: posts {query,parameters} (NOT whisper.agents), sends X-API-Key, keyed rows come back", async () => {
+  stubControl(200, graphEnvelope);
+  const res = await graph.identify("api.openai.com");
+  // request shape: the raw graph contract, not the control wrapper
+  assert.equal(lastReq.init.method, "POST");
+  assert.equal(lastReq.init.headers["X-API-Key"], "whisper_live_TESTKEY");
+  assert.equal(lastReq.init.headers["Content-Type"], "application/json");
+  assert.match(lastReq.sent.query, /CALL whisper\.identify\(\[\$v\]\) YIELD host, vendor_id/);
+  assert.ok(!/whisper\.agents/.test(lastReq.sent.query)); // never the control wrapper
+  assert.deepEqual(lastReq.sent.parameters, { v: "api.openai.com" });
+  // result: normalized {columns,rows,statistics}; rows keyed by column name
+  assert.deepEqual(res.columns, ["host", "vendor_id", "canonical_name"]);
+  assert.equal(res.rows[0].vendor_id, "openai");
+  assert.equal(res.statistics.rowCount, 1);
+});
+
+test("graph direct methods bind $v and carry their catalog Cypher", async () => {
+  stubControl(200, { columns: ["apex"], rows: [{ apex: "foo.co.uk" }] });
+  await graph.pslTldplusone("www.foo.co.uk");
+  assert.match(lastReq.sent.query, /CALL whisper\.psl\.tldPlusOne\(\$v\) YIELD apex/);
+  assert.deepEqual(lastReq.sent.parameters, { v: "www.foo.co.uk" });
+
+  stubControl(200, { columns: ["asSetName", "memberAsn"], rows: [] });
+  await graph.asset("AS-CLOUDFLARE");
+  assert.match(lastReq.sent.query, /CALL whisper\.asSet\(\$v\)/);
+  assert.deepEqual(lastReq.sent.parameters, { v: "AS-CLOUDFLARE" });
+});
+
+test("graph.dbSchema: no input, empty parameters", async () => {
+  stubControl(200, { columns: ["type", "name"], rows: [{ type: "node", name: "HOSTNAME" }] });
+  const res = await graph.dbSchema();
+  assert.equal(lastReq.sent.query, "CALL db.schema()");
+  assert.deepEqual(lastReq.sent.parameters, {});
+  assert.equal(res.rows[0].name, "HOSTNAME");
+});
+
+test("graph.submit: binds the payload as a single map parameter; needs a kind", async () => {
+  stubControl(200, { columns: ["status"], rows: [{ status: "accepted" }] });
+  await graph.submit({ kind: "indicator", indicator: "evil.example", note: "phish" });
+  assert.match(lastReq.sent.query, /CALL whisper\.submit\(\$submission\)/);
+  assert.deepEqual(lastReq.sent.parameters, { submission: { kind: "indicator", indicator: "evil.example", note: "phish" } });
+  await assert.rejects(() => graph.submit({ indicator: "x" }), WhisperError); // no kind
+});
+
+test("graph.query: raw escape hatch passes cypher + params through", async () => {
+  stubControl(200, { columns: ["n"], rows: [{ n: 1 }], statistics: { rowCount: 1 } });
+  const res = await graph.query("MATCH (n) RETURN n LIMIT $lim", { lim: 1 });
+  assert.equal(lastReq.sent.query, "MATCH (n) RETURN n LIMIT $lim");
+  assert.deepEqual(lastReq.sent.parameters, { lim: 1 });
+  assert.equal(res.rows[0].n, 1);
+  await assert.rejects(() => graph.query("  "), WhisperError); // empty cypher
+});
+
+test("graph accepts positional-array rows and aligns them to columns", async () => {
+  stubControl(200, { columns: ["ip", "confidence"], rows: [["1.2.3.4", 0.9]], statistics: null });
+  const res = await graph.origins("cloudflare.com");
+  assert.deepEqual(res.rows[0], { ip: "1.2.3.4", confidence: 0.9 });
+});
+
+test("graph: an empty value is rejected with a clear WhisperError", async () => {
+  await assert.rejects(() => graph.identify("  "), WhisperError);
+});
+
+test("graph: missing key throws WhisperError (pointing at the keyless surface)", async () => {
+  const saved = process.env.WHISPER_API_KEY;
+  delete process.env.WHISPER_API_KEY;
+  await assert.rejects(
+    () => graph.identify("api.openai.com"),
+    (err) => err instanceof WhisperError && /needs a Whisper API key/.test(err.message)
+  );
+  // opts.apiKey satisfies it and is sent in X-API-Key
+  stubControl(200, graphEnvelope);
+  await graph.identify("api.openai.com", { apiKey: "whisper_live_VIAOPTS" });
+  assert.equal(lastReq.init.headers["X-API-Key"], "whisper_live_VIAOPTS");
+  process.env.WHISPER_API_KEY = saved;
+});
+
+test("graph: a server error body throws WhisperError carrying detail + status", async () => {
+  stubControl(429, { error: { status: 429, detail: "rate limit exceeded", retry_after: 30 } });
+  await assert.rejects(
+    () => graph.assess("8.8.8.8"),
+    (err) => err instanceof WhisperError && err.message === "rate limit exceeded" && err.status === 429 && err.retryAfter === 30
+  );
+});
+
+test("graph: a flow method rejects with a clear runs-via-workflow-runner note (not wired)", async () => {
+  await assert.rejects(
+    () => graph.attackPath(),
+    (err) => err instanceof WhisperError && /workflow runner/.test(err.message) && err.runVia === "run_workflow (attack-path)"
+  );
+});
+
+test("graph namespace has exactly the 29 catalog methods + query (drift guard)", () => {
+  const names = Object.keys(graph).filter((k) => typeof graph[k] === "function");
+  assert.equal(names.length, 30); // 14 direct + 15 flow + query
+  for (const m of ["query", "identify", "assess", "dbSchema", "submit", "typosquat", "attackPath"]) {
+    assert.ok(names.includes(m), `missing graph.${m}`);
+  }
 });

@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: MIT
 // Copyright (c) 2026 viaGraph B.V. (Whisper Security)
-// whisper-id — a routable IPv6 identity and safe egress for any Node agent.
+// whisper-id - a routable IPv6 identity and safe egress for any Node agent.
 // A thin, dependency-free wrapper over the `whisper` CLI (https://whisper.online): the CLI
 // holds the auth, control plane, and egress tunnel; this gives you register/egress/verify/ip.
 import { execFile } from "node:child_process";
@@ -72,7 +72,7 @@ function getKey(obj, ...keys) {
   return null;
 }
 
-/** Create a named agent identity — a routable Whisper IPv6 /128. */
+/** Create a named agent identity - a routable Whisper IPv6 /128. */
 export async function register(name, { newKey = false, timeout = 120000 } = {}) {
   if (!name || !name.trim()) throw new WhisperError("register() needs a non-empty agent name");
   const args = ["create", "--name", name];
@@ -129,7 +129,7 @@ export async function withEgress(optsOrFn, maybeFn) {
 }
 
 // Keyless public endpoint base (the same surface the CLI uses, server-side). No key, no `whisper`
-// CLI — these work in any runtime that can fetch() (serverless, edge, browser). Override via env.
+// CLI - these work in any runtime that can fetch() (serverless, edge, browser). Override via env.
 function rdapBase() {
   return (process.env.WHISPER_RDAP_URL || "https://rdap.whisper.online").replace(/\/+$/, "");
 }
@@ -155,7 +155,7 @@ async function httpGetJson(url, { timeout = 60000 } = {}) {
 }
 
 /**
- * Return true iff `address` is a real Whisper agent. **Keyless and CLI-free** — one HTTPS GET to
+ * Return true iff `address` is a real Whisper agent. **Keyless and CLI-free** - one HTTPS GET to
  * the public /verify-identity endpoint (server-side DANE+DNSSEC+reverse-DNS+JWS chain). Works in
  * any runtime. 200 ⇒ agent, 404 ⇒ not. Throws only if the endpoint is unreachable.
  */
@@ -163,7 +163,7 @@ export async function verify(address, { timeout = 60000 } = {}) {
   return (await verifyDetails(address, { timeout })) !== null;
 }
 
-/** Full verify verdict for a real agent (is_whisper_agent, fqdn, operator, tenant, dane_ok, jws_ok, …), else null. Keyless, CLI-free. */
+/** Full verify verdict for a real agent (is_whisper_agent, fqdn, operator, tenant, dane_ok, jws_ok, ...), else null. Keyless, CLI-free. */
 export async function verifyDetails(address, { timeout = 60000 } = {}) {
   if (!address || !address.trim()) throw new WhisperError("verify() needs an address");
   const url = `${rdapBase()}/verify-identity?ip=${encodeURIComponent(address.trim())}`;
@@ -172,10 +172,10 @@ export async function verifyDetails(address, { timeout = 60000 } = {}) {
   return body;
 }
 
-/** Public RDAP record for a Whisper /128 (handle, name, status, entities, …), or null. Keyless, CLI-free. */
+/** Public RDAP record for a Whisper /128 (handle, name, status, entities, ...), or null. Keyless, CLI-free. */
 export async function rdap(address, { timeout = 60000 } = {}) {
   if (!address || !address.trim()) throw new WhisperError("rdap() needs an address");
-  const url = `${rdapBase()}/ip/${encodeURI(address.trim())}`; // path segment — keep the literal colons
+  const url = `${rdapBase()}/ip/${encodeURI(address.trim())}`; // path segment - keep the literal colons
   const { status, body } = await httpGetJson(url, { timeout });
   return status === 200 ? body : null;
 }
@@ -193,10 +193,10 @@ export async function ip({ timeout = 60000 } = {}) {
   return getKey(env, "ip", "agent") || firstAddr(env) || "";
 }
 
-// ── Control plane (pure HTTP — no CLI) ──────────────────────────────────────────────
+// ── Control plane (pure HTTP - no CLI) ──────────────────────────────────────────────
 // The governance half of the two-tier surface (Postel: keyless verify above works with no
-// key; these unlock with the caller's key). One control verb — `whisper.agents({op,args})`
-// — POSTed straight to the control endpoint. No `whisper` CLI, no child process, no key on
+// key; these unlock with the caller's key). One control verb - `whisper.agents({op,args})`
+// - POSTed straight to the control endpoint. No `whisper` CLI, no child process, no key on
 // argv: works in any runtime with fetch() (serverless, edge, a plain server). The key is
 // read from opts.apiKey or $WHISPER_API_KEY and sent ONLY in the X-API-Key header.
 
@@ -204,8 +204,8 @@ function controlUrl() {
   return process.env.WHISPER_CONTROL_URL || "https://graph.whisper.security/api/query";
 }
 
-// Conservative-emit (RFC 761): render a value as a Cypher literal so no input — however
-// hostile — can break out of the map. A ' is doubled and a \ is doubled (order matters:
+// Conservative-emit (RFC 761): render a value as a Cypher literal so no input - however
+// hostile - can break out of the map. A ' is doubled and a \ is doubled (order matters:
 // backslashes first). Mirrors the reference client's cypher builder byte-for-byte.
 function escapeCypher(s) {
   return String(s).replace(/\\/g, "\\\\").replace(/'/g, "''");
@@ -235,8 +235,8 @@ function buildAgentsQuery(op, args) {
 }
 
 // Liberal-accept (RFC 761): decode BOTH documented envelope shapes into one normalised
-// { ok, status, result, error, retryAfter } — the flat {ok,status,result,error} dev shape
-// AND the live procedure-row table whose single row carries the per-op envelope — plus a
+// { ok, status, result, error, retryAfter } - the flat {ok,status,result,error} dev shape
+// AND the live procedure-row table whose single row carries the per-op envelope - plus a
 // bare RFC-7807 problem object. Never throws on shape; a fault becomes error, not a crash.
 function decodeEnvelope(body, httpStatus) {
   const out = { ok: false, status: httpStatus, result: null, error: null, retryAfter: null };
@@ -254,9 +254,9 @@ function decodeEnvelope(body, httpStatus) {
     if (out.error && !out.error.status) out.error.status = out.status;
     return out;
   };
-  // Shape B — an explicit ok flag at the top level.
+  // Shape B - an explicit ok flag at the top level.
   if (typeof body.ok === "boolean") return applyRow(body);
-  // Shape A — the procedure-row table: rows[0] carries {op,ok,status,result,error,…}. The
+  // Shape A - the procedure-row table: rows[0] carries {op,ok,status,result,error,...}. The
   // row may be an object already, or a positional array aligned to top-level columns.
   if (Array.isArray(body.rows) && body.rows.length > 0) {
     let row0 = body.rows[0];
@@ -287,7 +287,7 @@ function decodeEnvelope(body, httpStatus) {
 }
 
 // Turn a {columns,rows} result into column-keyed records. Rows may be positional arrays
-// (aligned to columns) or already-keyed objects — both are accepted.
+// (aligned to columns) or already-keyed objects - both are accepted.
 function recordsFrom(result) {
   if (!result || !Array.isArray(result.rows)) return [];
   const cols = Array.isArray(result.columns) ? result.columns : [];
@@ -312,7 +312,7 @@ async function callControl(op, args, opts = {}) {
   const key = resolveKey(opts);
   if (!key) {
     throw new WhisperError(
-      `\`${op}\` needs a Whisper API key — pass { apiKey } or set WHISPER_API_KEY. ` +
+      `\`${op}\` needs a Whisper API key - pass { apiKey } or set WHISPER_API_KEY. ` +
         "(verify/verifyDetails/rdap are keyless and need no key.)"
     );
   }
@@ -383,7 +383,7 @@ export async function policy(opts = {}) {
 }
 
 /**
- * Query recent activity from warm storage (op:logs) — the poll counterpart of the live
+ * Query recent activity from warm storage (op:logs) - the poll counterpart of the live
  * monitor. All filters optional: `{ agent, kind:"dns"|"conn"|"alloc", from, to, limit }`
  * (from/to accept epoch-ms, RFC-3339, or relative like "-1h"). → an array of event records.
  */
@@ -399,9 +399,9 @@ export async function logs(opts = {}) {
 }
 
 /**
- * Fully revoke an agent — IRREVERSIBLE (op:revoke; needs admin:dns). Liberal input:
- * `revoke("agent-id")`, `revoke("2a04:2a01:…")`, or `revoke({ agent, apiKey })`.
- * → `{ status, … }`.
+ * Fully revoke an agent - IRREVERSIBLE (op:revoke; needs admin:dns). Liberal input:
+ * `revoke("agent-id")`, `revoke("2a04:2a01:...")`, or `revoke({ agent, apiKey })`.
+ * → `{ status, ... }`.
  */
 export async function revoke(target, maybeOpts) {
   const o = typeof target === "string" ? maybeOpts || {} : target || {};
@@ -414,7 +414,7 @@ export async function revoke(target, maybeOpts) {
 
 /**
  * Allocate your own /128 identity (op:identity): `identity({ label, contact_email })`.
- * Release form: `identity({ release:true, address:"2a04:2a01:…" })`.
+ * Release form: `identity({ release:true, address:"2a04:2a01:..." })`.
  * → `{ agent, address, fqdn, ptr, state }`.
  */
 export async function identity(opts = {}) {
@@ -434,7 +434,7 @@ export async function identity(opts = {}) {
 }
 
 /**
- * One agent's detail + live counters (op:agent). Liberal input: `agent("2a04:2a01:…")`,
+ * One agent's detail + live counters (op:agent). Liberal input: `agent("2a04:2a01:...")`,
  * `agent("agent-id")`, or `agent({ agent })` / `agent({ address })`. A value with a colon
  * is treated as a /128 address. → the detail record, or null if not in your account.
  */
@@ -454,3 +454,201 @@ export async function agent(sel = {}, maybeOpts) {
   const recs = await callControl("agent", args, o);
   return recs.length ? recs[0] : null;
 }
+
+// ── Graph (keyed Cypher over the Whisper Security graph) ─────────────────────────────
+// The intelligence half of the keyed surface. Postel two-tier holds cleanly: the keyless
+// identity calls above (verify/verifyDetails/rdap) run with NO key and touch NO Cypher;
+// this whole `graph` namespace is KEYED (Kaveh's absolute rule: if it is Cypher, it needs
+// a key). It POSTs raw Cypher to the SAME endpoint the control plane uses
+// (https://graph.whisper.security/api/query, X-API-Key), reusing resolveKey() so there is
+// one auth path, not two. It does NOT go through the whisper.agents() control wrapper: the
+// graph contract is different (body {query,parameters}; reply {columns,rows,statistics}
+// where rows are already column-keyed objects), so it has its own choke point, callGraph().
+//
+// Source of truth for the 29 methods is the Whisper query catalog (catalog.json +
+// sdk-methods.json); the tables below are copied from it (keyed by exec.mode). A test
+// asserts the count so the two cannot silently drift. 14 `direct` entries run their catalog
+// Cypher against /api/query; 15 `flow` entries run via the workflow runner (run_workflow),
+// which is NOT a single /api/query Cypher, so they are shipped as clearly-noted stubs and
+// are not wired to an engine here. graph.query() is the raw escape hatch.
+
+function graphUrl() {
+  // Defaults to the control endpoint, which already IS the graph endpoint. Override for tests
+  // or a private deployment. WHISPER_GRAPH_URL wins, then the shared control URL.
+  return process.env.WHISPER_GRAPH_URL || controlUrl();
+}
+
+// Normalise the /api/query reply into { columns, rows, statistics }. Per the contract rows
+// are OBJECTS keyed by column name; we also accept a positional-array row (aligned to
+// columns) so a liberal server shape still decodes. Never throws on shape.
+function normalizeGraph(body) {
+  if (!body || typeof body !== "object") return { columns: [], rows: [], statistics: null };
+  const columns = Array.isArray(body.columns) ? body.columns : [];
+  const rawRows = Array.isArray(body.rows) ? body.rows : [];
+  const rows = rawRows.map((row) => {
+    if (Array.isArray(row)) {
+      const m = {};
+      columns.forEach((c, i) => { if (i < row.length) m[c] = row[i]; });
+      return m;
+    }
+    return row && typeof row === "object" ? row : { value: row };
+  });
+  return { columns, rows, statistics: body.statistics || null };
+}
+
+// The one place that talks to the graph. Requires a key (via the shared resolveKey), POSTs
+// {query,parameters}, and on an HTTP>=400 or an RFC-7807 problem body throws a WhisperError
+// carrying the server's helpful detail (plus .status/.retryAfter). The key is only ever sent
+// in X-API-Key: never logged, never on argv, never returned.
+async function callGraph(cypher, params, opts = {}, methodName = "query") {
+  const key = resolveKey(opts);
+  if (!key) {
+    throw new WhisperError(
+      `\`graph.${methodName}\` needs a Whisper API key: pass { apiKey } or set WHISPER_API_KEY. ` +
+        "(verify/verifyDetails/rdap are keyless and need no key; graph queries are Cypher, so they do.)"
+    );
+  }
+  const url = graphUrl();
+  const timeout = opts.timeout || 60000;
+  const ctrl = new AbortController();
+  const t = setTimeout(() => ctrl.abort(), timeout);
+  let res;
+  try {
+    res = await fetch(url, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Accept: "application/json",
+        "X-API-Key": key,
+        "User-Agent": UA,
+      },
+      body: JSON.stringify({ query: cypher, parameters: params || {} }),
+      signal: ctrl.signal,
+    });
+  } catch (err) {
+    throw new WhisperError(`could not reach the Whisper graph at ${url}: ${err && err.message ? err.message : err}`);
+  } finally {
+    clearTimeout(t);
+  }
+  let body = null;
+  try {
+    body = await res.json();
+  } catch {
+    body = null;
+  }
+  // A fault is either an HTTP error status or a problem body (has error/detail/title but no
+  // result table). A valid table always carries columns/rows, so those are never a fault.
+  const hasTable = body && typeof body === "object" && (Array.isArray(body.columns) || Array.isArray(body.rows));
+  const problem = body && typeof body === "object" && (body.error || (!hasTable && (body.detail || body.title || body.type)));
+  if (res.status >= 400 || problem) {
+    const e = (body && (body.error || body)) || {};
+    const werr = new WhisperError(e.detail || e.title || e.message || e.type || `graph query returned HTTP ${res.status}`);
+    werr.status = e.status || res.status;
+    if (e.retry_after != null) werr.retryAfter = e.retry_after;
+    throw werr;
+  }
+  return normalizeGraph(body);
+}
+
+// The 14 `direct` catalog entries: id (camelCased) -> its catalog Cypher. Every one binds a
+// single input as $v (paramName `v` in the catalog), except dbSchema (no input) and submit
+// (a write map, handled below). Copied verbatim from whisper-catalog/catalog.json.
+const GRAPH_DIRECT = {
+  identify: "CALL whisper.identify([$v]) YIELD host, vendor_id, canonical_name, category, roles, host_class, band",
+  assess: "CALL whisper.assess([$v]) YIELD host, label, band, sub_labels, coverage, evidence",
+  variants: "CALL whisper.variants($v) YIELD variant, method, exists, confidence",
+  walk: "CALL whisper.walk($v) YIELD coverage, host, nearest_known_vendors, no_atlas_match, siblings",
+  explain: "CALL whisper.explain($v) YIELD indicator, score, level, explanation, sources",
+  pslTldplusone: "CALL whisper.psl.tldPlusOne($v) YIELD apex",
+  pslAffiliation: "CALL whisper.psl.affiliation($v) YIELD found, suffix, submitterOrg, submitterLogin, evidenceKind, confidence",
+  origins: "CALL whisper.origins($v) YIELD ip, confidence, methods, asn, asnName, kind",
+  history: "CALL whisper.history($v)",
+  historyWhois: "CALL whisper.history.whois($v) YIELD queryTime, createDate, updateDate, expiryDate, registrar, registrant, country, nameServers",
+  asset: "CALL whisper.asSet($v) YIELD asSetName, memberAsn, sourceRir",
+  lookupTorRelay: "CALL whisper.lookupTorRelay($v) YIELD indicator, found, fingerprint, exitAddressCount, source, ingestedAt",
+};
+
+// The 15 `flow` catalog entries: id (camelCased) -> its runVia slug. These are multi-step
+// read workflows run by the console/agent workflow runner, NOT a single /api/query Cypher,
+// so they are not wired to an engine in this SDK. Copied verbatim from the catalog.
+const GRAPH_FLOW = {
+  anycastDnsRootSovereignty: "run_workflow (anycast-dns-root-sovereignty)",
+  attackPath: "run_workflow (attack-path)",
+  attackSurface: "run_workflow (attack-surface)",
+  bgpHijackExposure: "run_workflow (bgp-hijack-exposure)",
+  blastRadius: "run_workflow (blast-radius)",
+  buildTakedownEvidencePackage: "run_workflow (build-takedown-evidence-package)",
+  discoverAiAgentInfrastructure: "run_workflow (discover-ai-agent-infrastructure)",
+  indicator: "run_workflow (indicator)",
+  indicatorEnrichment: "run_workflow (indicator-enrichment)",
+  infrastructureMapping: "run_workflow (infrastructure-mapping)",
+  mapSupplyChainConcentration: "run_workflow (map-supply-chain-concentration)",
+  nameserverHijackDnsConsistency: "run_workflow (nameserver-hijack-dns-consistency)",
+  routeHealth: "run_workflow (route-health)",
+  subdomainTakeover: "run_workflow (subdomain-takeover)",
+  typosquat: "run_workflow (typosquat)",
+};
+
+// Coerce a liberal first arg into the string value bound as $v. Accepts a bare value or a
+// { value } / { v } wrapper; empty is rejected with a clear error, never an opaque failure.
+function graphValue(name, value) {
+  let v = value;
+  if (v && typeof v === "object" && !Array.isArray(v)) {
+    if (v.value !== undefined) v = v.value;
+    else if (v.v !== undefined) v = v.v;
+  }
+  if (v === null || v === undefined || String(v).trim() === "") {
+    throw new WhisperError(`graph.${name}() needs a value (a host, IP, domain, or ASN)`);
+  }
+  return String(v).trim();
+}
+
+/**
+ * Run raw Cypher against the Whisper Security graph (keyed). The escape hatch under every
+ * typed method: `graph.query("MATCH (n) RETURN n LIMIT 1", {}, { apiKey })`. Returns the
+ * full `{ columns, rows, statistics }` (rows are objects keyed by column name).
+ */
+async function graphQuery(cypher, params, opts = {}) {
+  if (!cypher || !String(cypher).trim()) throw new WhisperError("graph.query() needs a Cypher string");
+  return callGraph(String(cypher), params || {}, opts, "query");
+}
+
+// Build the namespace: query + a typed method per catalog entry. Direct methods run their
+// Cypher; flow methods throw a clear, honest "runs via the workflow runner, not wired here"
+// error (never a silent no-op) and carry .runVia for programmatic inspection.
+const graph = { query: graphQuery };
+
+for (const [name, cypher] of Object.entries(GRAPH_DIRECT)) {
+  graph[name] = async (value, opts = {}) => callGraph(cypher, { v: graphValue(name, value) }, opts, name);
+}
+
+/** List every node and relationship type in the graph with counts and examples (keyed). No input. */
+graph.dbSchema = async (opts = {}) => callGraph("CALL db.schema()", {}, opts, "dbSchema");
+
+/**
+ * Contribute an indicator observation or feedback back into the graph (keyed WRITE). Pass
+ * `{ kind: "indicator" | "feedback", ...fields }`. The payload is bound as a single Cypher
+ * parameter (injection-safe). The server enforces its own write scopes and rejects anonymous
+ * callers, so a scope/quota fault surfaces as the server's WhisperError detail.
+ */
+graph.submit = async (payload, opts = {}) => {
+  const p = payload && typeof payload === "object" && !Array.isArray(payload) ? payload : {};
+  if (!p.kind || String(p.kind).trim() === "") {
+    throw new WhisperError("graph.submit() needs a { kind } of 'indicator' or 'feedback' (plus its fields)");
+  }
+  return callGraph("CALL whisper.submit($submission)", { submission: p }, opts, "submit");
+};
+
+for (const [name, runVia] of Object.entries(GRAPH_FLOW)) {
+  graph[name] = () => {
+    const err = new WhisperError(
+      `graph.${name}() is a multi-step read workflow: it runs via the Whisper workflow runner ` +
+        `(${runVia}), not a single /api/query Cypher, and is not wired into this SDK yet. Use ` +
+        "graph.query() for a raw Cypher call, or run the workflow via the console/agent runner."
+    );
+    err.runVia = runVia;
+    return Promise.reject(err);
+  };
+}
+
+export { graph };
