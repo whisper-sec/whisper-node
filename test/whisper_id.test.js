@@ -225,9 +225,11 @@ test("revoke rejects an empty selector", async () => {
   await assert.rejects(() => revoke("  "), WhisperError);
 });
 
-// ── Graph namespace (keyed Cypher, /api/query contract) ─────────────────────────────
+// ── Graph namespace (two-tier Cypher, /api/query contract) ──────────────────────────
 // The graph envelope: {columns, rows:[{col:val}], statistics}. Rows are already keyed
 // objects (NOT the whisper.agents row-envelope). stubControl (above) captures lastReq.
+// Two-tier: the 13 direct read verbs run keyless (no key -> no X-API-Key header, no
+// throw); raw query, the flows, and submit are keyed (no key -> a helpful throw).
 const graphEnvelope = {
   columns: ["host", "vendor_id", "canonical_name"],
   rows: [{ host: "api.openai.com", vendor_id: "openai", canonical_name: "OpenAI" }],
@@ -306,18 +308,57 @@ test("graph: an empty value is rejected with a clear WhisperError", async () => 
   await assert.rejects(() => graph.identify("  "), WhisperError);
 });
 
-test("graph: missing key throws WhisperError (pointing at the keyless surface)", async () => {
+test("graph two-tier: a keyless read verb with NO key does not throw and omits the auth header", async () => {
   const saved = process.env.WHISPER_API_KEY;
   delete process.env.WHISPER_API_KEY;
-  await assert.rejects(
-    () => graph.identify("api.openai.com"),
-    (err) => err instanceof WhisperError && /needs a Whisper API key/.test(err.message)
-  );
-  // opts.apiKey satisfies it and is sent in X-API-Key
+  stubControl(200, graphEnvelope);
+  const res = await graph.identify("api.openai.com"); // keyless taste: no key, real answer
+  assert.equal(res.rows[0].vendor_id, "openai");
+  assert.ok(!("X-API-Key" in lastReq.init.headers), "keyless call must not send X-API-Key");
+  // the same holds for the no-input read
+  stubControl(200, { columns: ["type"], rows: [{ type: "node" }] });
+  await graph.dbSchema();
+  assert.ok(!("X-API-Key" in lastReq.init.headers));
+  // a key, when present, is still sent (it lifts the rate limit)
   stubControl(200, graphEnvelope);
   await graph.identify("api.openai.com", { apiKey: "whisper_live_VIAOPTS" });
   assert.equal(lastReq.init.headers["X-API-Key"], "whisper_live_VIAOPTS");
   process.env.WHISPER_API_KEY = saved;
+});
+
+test("graph two-tier: keyed verbs (raw query, submit, flows) without a key throw a helpful error", async () => {
+  const saved = process.env.WHISPER_API_KEY;
+  delete process.env.WHISPER_API_KEY;
+  const keyedThrow = (err) => err instanceof WhisperError && /needs a Whisper API key/.test(err.message) && /keyless/.test(err.message);
+  await assert.rejects(() => graph.query("CALL db.schema()"), keyedThrow);
+  await assert.rejects(() => graph.submit({ kind: "indicator", identifier_kind: "ip", value: "203.0.113.5" }), keyedThrow);
+  await assert.rejects(() => graph.typosquat("paypal.com"), keyedThrow);
+  process.env.WHISPER_API_KEY = saved;
+});
+
+test("graph.recipes: keyless, no-network catalog discovery of all 29 methods", () => {
+  const recs = graph.recipes();
+  assert.equal(recs.length, 29);
+  const by = Object.fromEntries(recs.map((r) => [r.method, r]));
+  // the two-tier split, straight from the catalog
+  assert.equal(recs.filter((r) => r.keyless).length, 13);
+  assert.equal(by.assess.keyless, true);
+  assert.equal(by.assess.mode, "direct");
+  assert.deepEqual(by.assess.params, ["v"]);
+  assert.equal(by.typosquat.keyless, false);
+  assert.equal(by.typosquat.mode, "flow");
+  assert.deepEqual(by.typosquat.params, ["domain"]);
+  assert.equal(by.submit.keyless, false);
+  assert.ok(by.submit.params.includes("kind"));
+  for (const r of recs) {
+    assert.equal(typeof r.summary, "string");
+    assert.ok(r.summary.length > 0, `${r.method} has no summary`);
+    assert.match(r.docsUrl, /^https:\/\/www\.whisper\.security\/docs\//, `${r.method} has no docsUrl`);
+    assert.equal(typeof graph[r.method], "function", `recipe ${r.method} is not callable on graph`);
+  }
+  // each call returns a fresh copy: mutating one never poisons the catalog
+  recs[0].method = "clobbered";
+  assert.notEqual(graph.recipes()[0].method, "clobbered");
 });
 
 test("graph: a server error body throws WhisperError carrying detail + status", async () => {
@@ -403,10 +444,10 @@ test("graph flow: needs a key, and an empty bare input is rejected with a clear 
   await assert.rejects(() => graph.typosquat("  "), /needs a value/);
 });
 
-test("graph namespace has exactly the 29 catalog methods + query (drift guard)", () => {
+test("graph namespace has exactly the 29 catalog methods + query + recipes (drift guard)", () => {
   const names = Object.keys(graph).filter((k) => typeof graph[k] === "function");
-  assert.equal(names.length, 30); // 14 direct + 15 flow + query
-  for (const m of ["query", "identify", "assess", "dbSchema", "submit", "typosquat", "attackPath"]) {
+  assert.equal(names.length, 31); // 14 direct + 15 flow + query + recipes
+  for (const m of ["query", "recipes", "identify", "assess", "dbSchema", "submit", "typosquat", "attackPath"]) {
     assert.ok(names.includes(m), `missing graph.${m}`);
   }
 });

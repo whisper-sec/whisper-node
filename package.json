@@ -1,7 +1,7 @@
 {
   "name": "whisper-id",
-  "version": "0.5.1",
-  "description": "A routable Whisper IPv6 identity and safe egress for any Node agent.",
+  "version": "0.6.0",
+  "description": "Give any Node agent the Whisper security graph (keyless reads + keyed Cypher), a real routable Whisper IPv6 identity, safe egress, and the full control plane.",
   "type": "module",
   "exports": {
     ".": {

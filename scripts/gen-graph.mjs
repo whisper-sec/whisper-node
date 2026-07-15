@@ -88,6 +88,9 @@ const rows = sdk.methods.map((m, i) => {
     name: m.method,
     id: entry.id,
     docs,
+    // Two-tier access, straight from the catalog: requiresKey:false marks the direct
+    // read verbs that run with no key at all (a rate-limited taste, real answers).
+    keyless: !(m.requiresKey ?? true),
     purpose: clean(entry.purpose || m.summary || m.method),
     why: clean(entry.why || ""),
     returns: (m.returns || []).map(clean),
@@ -130,34 +133,44 @@ const directs = rows.filter((r) => r.mode === "direct");
 if (directs.length !== 14 || flows.length !== 15) {
   throw new Error(`unexpected catalog split: ${directs.length} direct + ${flows.length} flow`);
 }
+const keyless = rows.filter((r) => r.keyless);
+if (keyless.length !== 13 || keyless.some((r) => r.mode !== "direct")) {
+  throw new Error(`unexpected keyless set: ${keyless.length} keyless (expected the 13 direct reads)`);
+}
 
 // ── index.js: the runtime catalog table ──────────────────────────────────────────────
 function jsRow(r) {
   const docs = `GRAPH_DOCS_BASE + ${jsString(r.docs)}`;
+  const keyless = `keyless: ${r.keyless ? "true" : "false"}`;
+  const summary = `summary: ${jsString(r.purpose)}`;
   if (r.mode === "flow") {
     const parts = [
       `name: ${jsString(r.name)}`,
       `mode: "flow"`,
+      keyless,
       `slug: ${jsString(r.slug)}`,
       `primary: ${r.primary ? jsString(r.primary) : "null"}`,
       `inputs: [${r.inputs.map(jsString).join(", ")}]`,
       `params: [${r.params.map(jsString).join(", ")}]`,
+      summary,
       `docs: ${docs}`,
     ];
     return `  { ${parts.join(", ")} },`;
   }
   if (r.fields) {
     const fields = r.fields.map(([id, p]) => `[${jsString(id)}, ${jsString(p)}]`).join(", ");
-    return `  { name: ${jsString(r.name)}, mode: "direct", proc: ${jsString(r.proc)}, fields: [${fields}], requires: [${r.requires.map(jsString).join(", ")}], docs: ${docs} },`;
+    return `  { name: ${jsString(r.name)}, mode: "direct", ${keyless}, proc: ${jsString(r.proc)}, fields: [${fields}], requires: [${r.requires.map(jsString).join(", ")}], ${summary}, docs: ${docs} },`;
   }
-  return `  { name: ${jsString(r.name)}, mode: "direct", input: ${r.input ? jsString(r.input) : "null"}, cypher: ${jsString(r.cypher)}, docs: ${docs} },`;
+  return `  { name: ${jsString(r.name)}, mode: "direct", ${keyless}, input: ${r.input ? jsString(r.input) : "null"}, cypher: ${jsString(r.cypher)}, ${summary}, docs: ${docs} },`;
 }
 
 const jsRegion = [
   "// The Whisper query catalog, one row per entry (14 direct + 15 flow), in catalog order.",
   "// A direct row carries its catalog Cypher (input bound as a $-parameter); a flow row",
   "// carries its gallery/run slug plus the input/param names the workflow runner accepts;",
-  "// the map-call row (submit) enumerates its fields. `docs` is the canonical docs URL.",
+  "// the map-call row (submit) enumerates its fields. `keyless` marks the 13 direct read",
+  "// verbs that run with no key at all (two-tier, straight from the catalog's requiresKey);",
+  "// `summary` feeds recipes() discovery; `docs` is the canonical docs URL.",
   `const GRAPH_DOCS_BASE = ${jsString(docsBase)};`,
   `const GRAPH_FLOW_RUN_URL = ${jsString(flowRunUrl)};`,
   "const GRAPH_METHODS = [",
@@ -180,6 +193,10 @@ function dtsDoc(r) {
   } else if (r.fields) {
     lines.push(`KEYED write: CALL ${r.proc}({...}) with the payload fields bound as $-parameters.`);
     lines.push(`Fields: ${r.fields.map(([, p]) => p).join(", ")} (${r.requires.join(", ")} required).`);
+  } else if (r.keyless) {
+    lines.push("KEYLESS direct read: runs with NO key at all (a rate-limited taste, real");
+    lines.push("answers); pass a key ({ apiKey } or WHISPER_API_KEY) to lift the limit.");
+    lines.push(`Cypher: ${r.cypher}`);
   } else {
     lines.push(`KEYED. Cypher: ${r.cypher}`);
   }

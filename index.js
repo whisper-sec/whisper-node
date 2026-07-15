@@ -1,8 +1,10 @@
 // SPDX-License-Identifier: MIT
 // Copyright (c) 2026 viaGraph B.V. (Whisper Security)
-// whisper-id - a routable IPv6 identity and safe egress for any Node agent.
-// A thin, dependency-free wrapper over the `whisper` CLI (https://whisper.online): the CLI
-// holds the auth, control plane, and egress tunnel; this gives you register/egress/verify/ip.
+// whisper-id - the Whisper security graph, a routable IPv6 identity, and safe egress for
+// any Node agent. Dependency-free and two-tier (Postel): the graph's direct read verbs and
+// the identity checks run KEYLESS over plain fetch() (graph.assess("8.8.8.8") needs no key
+// at all); the control plane, raw Cypher, and the flows unlock with WHISPER_API_KEY; only
+// register/egress/ip lean on the `whisper` CLI (https://whisper.online).
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 
@@ -313,7 +315,7 @@ async function callControl(op, args, opts = {}) {
   if (!key) {
     throw new WhisperError(
       `\`${op}\` needs a Whisper API key - pass { apiKey } or set WHISPER_API_KEY. ` +
-        "(verify/verifyDetails/rdap are keyless and need no key.)"
+        "(verify/verifyDetails/rdap and the graph's direct read verbs are keyless and need no key.)"
     );
   }
   const url = controlUrl();
@@ -455,23 +457,27 @@ export async function agent(sel = {}, maybeOpts) {
   return recs.length ? recs[0] : null;
 }
 
-// ── Graph (keyed Cypher over the Whisper Security graph) ─────────────────────────────
-// The intelligence half of the keyed surface. Postel two-tier holds cleanly: the keyless
-// identity calls above (verify/verifyDetails/rdap) run with NO key and touch NO Cypher;
-// this whole `graph` namespace is KEYED (Kaveh's absolute rule: if it is Cypher, it needs
-// a key). It POSTs raw Cypher to the SAME endpoint the control plane uses
-// (https://graph.whisper.security/api/query, X-API-Key), reusing resolveKey() so there is
-// one auth path, not two. It does NOT go through the whisper.agents() control wrapper: the
-// graph contract is different (body {query,parameters}; reply {columns,rows,statistics}
-// where rows are already column-keyed objects), so it has its own choke point, callGraph().
+// ── Graph (the Whisper Security graph: Cypher intelligence, two-tier) ────────────────
+// The intelligence pillar, Postel two-tier with both halves honest: the 13 DIRECT READ
+// verbs (identify, assess, variants, walk, explain, pslTldplusone, pslAffiliation,
+// origins, history, historyWhois, asset, lookupTorRelay, dbSchema) run KEYLESS - no key
+// at all, a rate-limited taste (~100/window) with real answers; a key (opts.apiKey or
+// WHISPER_API_KEY) lifts the limit. Raw Cypher (graph.query), the 15 multi-step flows,
+// and the submit write channel stay KEYED. Everything POSTs to the SAME endpoint the
+// control plane uses (https://graph.whisper.security/api/query), reusing resolveKey() so
+// there is one auth path, not two: a present key rides ONLY in the X-API-Key header, an
+// absent one sends NO auth header at all. It does NOT go through the whisper.agents()
+// control wrapper: the graph contract is different (body {query,parameters}; reply
+// {columns,rows,statistics} where rows are already column-keyed objects), so it has its
+// own choke point, callGraph().
 //
 // Source of truth for the 29 methods is the Whisper query catalog (catalog.json +
 // sdk-methods.json): the GRAPH_METHODS table below is GENERATED from it by
 // scripts/gen-graph.mjs (`npm run gen`), so this SDK cannot drift from the catalog. The
 // 14 `direct` entries run their catalog Cypher against /api/query; the 15 `flow` entries
 // EXECUTE on the workflow runner (POST gallery/run, Server-Sent Events) via callFlow().
-// Every method carries its canonical docs URL as `.docs`. graph.query() is the raw
-// escape hatch.
+// Every method carries its canonical docs URL as `.docs`; graph.recipes() lists the
+// whole catalog (keyless, no network). graph.query() is the raw escape hatch.
 
 function graphUrl() {
   // Defaults to the control endpoint, which already IS the graph endpoint. Override for tests
@@ -497,32 +503,37 @@ function normalizeGraph(body) {
   return { columns, rows, statistics: body.statistics || null };
 }
 
-// The one place that talks to the graph. Requires a key (via the shared resolveKey), POSTs
-// {query,parameters}, and on an HTTP>=400 or an RFC-7807 problem body throws a WhisperError
-// carrying the server's helpful detail (plus .status/.retryAfter). The key is only ever sent
-// in X-API-Key: never logged, never on argv, never returned.
-async function callGraph(cypher, params, opts = {}, methodName = "query") {
-  const key = resolveKey(opts);
-  if (!key) {
+// The one place that talks to the graph. POSTs {query,parameters}, and on an HTTP>=400 or
+// an RFC-7807 problem body throws a WhisperError carrying the server's helpful detail
+// (plus .status/.retryAfter). Two-tier auth (Postel: liberal in what we accept): a keyless
+// method (`keyless: true`) NEVER throws for a missing key - with a key it runs unlimited,
+// without one the X-API-Key header is omitted entirely and the server serves the
+// rate-limited keyless taste. A keyed method with no key fails fast with a helpful error.
+// The key is only ever sent in X-API-Key: never logged, never on argv, never returned.
+async function callGraph(cypher, params, opts = {}, methodName = "query", keyless = false) {
+  const key = resolveKey(opts) || "";
+  if (!key && !keyless) {
     throw new WhisperError(
       `\`graph.${methodName}\` needs a Whisper API key: pass { apiKey } or set WHISPER_API_KEY. ` +
-        "(verify/verifyDetails/rdap are keyless and need no key; graph queries are Cypher, so they do.)"
+        "(The direct read verbs - assess, identify, explain, origins, and friends - run keyless " +
+        "with no key at all; raw Cypher, the flows, and submit are keyed. See graph.recipes().)"
     );
   }
   const url = graphUrl();
   const timeout = opts.timeout || 60000;
   const ctrl = new AbortController();
   const t = setTimeout(() => ctrl.abort(), timeout);
+  const headers = {
+    "Content-Type": "application/json",
+    Accept: "application/json",
+    "User-Agent": UA,
+  };
+  if (key) headers["X-API-Key"] = key; // present => keyed (unlimited); absent => keyless taste
   let res;
   try {
     res = await fetch(url, {
       method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        Accept: "application/json",
-        "X-API-Key": key,
-        "User-Agent": UA,
-      },
+      headers,
       body: JSON.stringify({ query: cypher, parameters: params || {} }),
       signal: ctrl.signal,
     });
@@ -555,39 +566,41 @@ async function callGraph(cypher, params, opts = {}, methodName = "query") {
 // The Whisper query catalog, one row per entry (14 direct + 15 flow), in catalog order.
 // A direct row carries its catalog Cypher (input bound as a $-parameter); a flow row
 // carries its gallery/run slug plus the input/param names the workflow runner accepts;
-// the map-call row (submit) enumerates its fields. `docs` is the canonical docs URL.
+// the map-call row (submit) enumerates its fields. `keyless` marks the 13 direct read
+// verbs that run with no key at all (two-tier, straight from the catalog's requiresKey);
+// `summary` feeds recipes() discovery; `docs` is the canonical docs URL.
 const GRAPH_DOCS_BASE = "https://www.whisper.security";
 const GRAPH_FLOW_RUN_URL = "https://console.whisper.security/api/gallery/run";
 const GRAPH_METHODS = [
-  { name: "anycastDnsRootSovereignty", mode: "flow", slug: "anycast-dns-root-sovereignty", primary: "country", inputs: ["country"], params: ["instanceType"], docs: GRAPH_DOCS_BASE + "/docs/recipes/compliance" },
-  { name: "attackPath", mode: "flow", slug: "attack-path", primary: "value", inputs: ["value", "other"], params: ["level"], docs: GRAPH_DOCS_BASE + "/docs/recipes/attack-path" },
-  { name: "attackSurface", mode: "flow", slug: "attack-surface", primary: "domain", inputs: ["domain"], params: ["level"], docs: GRAPH_DOCS_BASE + "/docs/recipes/pentest-recon" },
-  { name: "bgpHijackExposure", mode: "flow", slug: "bgp-hijack-exposure", primary: "value", inputs: ["value"], params: [], docs: GRAPH_DOCS_BASE + "/docs/recipes/bgp-routing" },
-  { name: "blastRadius", mode: "flow", slug: "blast-radius", primary: "indicator", inputs: ["indicator"], params: ["depth"], docs: GRAPH_DOCS_BASE + "/docs/recipes/soc" },
-  { name: "buildTakedownEvidencePackage", mode: "flow", slug: "build-takedown-evidence-package", primary: "domain", inputs: ["domain"], params: [], docs: GRAPH_DOCS_BASE + "/docs/recipes/threat-intel" },
-  { name: "discoverAiAgentInfrastructure", mode: "flow", slug: "discover-ai-agent-infrastructure", primary: "value", inputs: ["value"], params: [], docs: GRAPH_DOCS_BASE + "/docs/recipes/pentest-recon" },
-  { name: "indicator", mode: "flow", slug: "indicator", primary: "indicator", inputs: ["indicator"], params: [], docs: GRAPH_DOCS_BASE + "/docs/recipes/soc" },
-  { name: "indicatorEnrichment", mode: "flow", slug: "indicator-enrichment", primary: "value", inputs: ["value"], params: [], docs: GRAPH_DOCS_BASE + "/docs/recipes/dns-email" },
-  { name: "infrastructureMapping", mode: "flow", slug: "infrastructure-mapping", primary: "value", inputs: ["value"], params: ["level"], docs: GRAPH_DOCS_BASE + "/docs/recipes/compliance" },
-  { name: "mapSupplyChainConcentration", mode: "flow", slug: "map-supply-chain-concentration", primary: "domain", inputs: ["domain"], params: [], docs: GRAPH_DOCS_BASE + "/docs/recipes/compliance" },
-  { name: "nameserverHijackDnsConsistency", mode: "flow", slug: "nameserver-hijack-dns-consistency", primary: "value", inputs: ["value"], params: [], docs: GRAPH_DOCS_BASE + "/docs/recipes/dns-email" },
-  { name: "routeHealth", mode: "flow", slug: "route-health", primary: "target", inputs: ["target"], params: [], docs: GRAPH_DOCS_BASE + "/docs/recipes/bgp-routing" },
-  { name: "subdomainTakeover", mode: "flow", slug: "subdomain-takeover", primary: "value", inputs: ["value"], params: [], docs: GRAPH_DOCS_BASE + "/docs/recipes/pentest-recon" },
-  { name: "typosquat", mode: "flow", slug: "typosquat", primary: "domain", inputs: ["domain"], params: [], docs: GRAPH_DOCS_BASE + "/docs/recipes/brand-protection" },
-  { name: "identify", mode: "direct", input: "v", cypher: "CALL whisper.identify([$v]) YIELD host, vendor_id, canonical_name, category, roles, host_class, band", docs: GRAPH_DOCS_BASE + "/docs/whisper-graph/procedures/identify" },
-  { name: "assess", mode: "direct", input: "v", cypher: "CALL whisper.assess([$v]) YIELD host, label, band, sub_labels, coverage, evidence", docs: GRAPH_DOCS_BASE + "/docs/whisper-graph/procedures" },
-  { name: "variants", mode: "direct", input: "v", cypher: "CALL whisper.variants($v) YIELD variant, method, exists, confidence", docs: GRAPH_DOCS_BASE + "/docs/whisper-graph/procedures/variants" },
-  { name: "walk", mode: "direct", input: "v", cypher: "CALL whisper.walk($v) YIELD coverage, host, nearest_known_vendors, no_atlas_match, siblings", docs: GRAPH_DOCS_BASE + "/docs/whisper-graph/procedures" },
-  { name: "explain", mode: "direct", input: "v", cypher: "CALL whisper.explain($v) YIELD indicator, score, level, explanation, sources", docs: GRAPH_DOCS_BASE + "/docs/whisper-graph/procedures/explain" },
-  { name: "pslTldplusone", mode: "direct", input: "v", cypher: "CALL whisper.psl.tldPlusOne($v) YIELD apex", docs: GRAPH_DOCS_BASE + "/docs/whisper-graph/procedures/helpers" },
-  { name: "pslAffiliation", mode: "direct", input: "v", cypher: "CALL whisper.psl.affiliation($v) YIELD found, suffix, submitterOrg, submitterLogin, evidenceKind, confidence", docs: GRAPH_DOCS_BASE + "/docs/whisper-graph/procedures/helpers" },
-  { name: "origins", mode: "direct", input: "v", cypher: "CALL whisper.origins($v) YIELD ip, confidence, methods, asn, asnName, kind", docs: GRAPH_DOCS_BASE + "/docs/whisper-graph/procedures/origins" },
-  { name: "history", mode: "direct", input: "v", cypher: "CALL whisper.history($v)", docs: GRAPH_DOCS_BASE + "/docs/whisper-graph/procedures/history" },
-  { name: "historyWhois", mode: "direct", input: "v", cypher: "CALL whisper.history.whois($v) YIELD queryTime, createDate, updateDate, expiryDate, registrar, registrant, country, nameServers", docs: GRAPH_DOCS_BASE + "/docs/whisper-graph/procedures/history" },
-  { name: "asset", mode: "direct", input: "v", cypher: "CALL whisper.asSet($v) YIELD asSetName, memberAsn, sourceRir", docs: GRAPH_DOCS_BASE + "/docs/whisper-graph/procedures" },
-  { name: "lookupTorRelay", mode: "direct", input: "v", cypher: "CALL whisper.lookupTorRelay($v) YIELD indicator, found, fingerprint, exitAddressCount, source, ingestedAt", docs: GRAPH_DOCS_BASE + "/docs/whisper-graph/procedures/helpers" },
-  { name: "dbSchema", mode: "direct", input: null, cypher: "CALL db.schema()", docs: GRAPH_DOCS_BASE + "/docs/whisper-graph/schema" },
-  { name: "submit", mode: "direct", proc: "whisper.submit", fields: [["kind", "kind"], ["identifierKind", "identifier_kind"], ["value", "value"], ["observationId", "observation_id"], ["confidence", "confidence"], ["firstSeen", "first_seen"], ["provenance", "provenance"], ["query", "query"], ["results", "results"], ["comment", "comment"], ["severity", "severity"], ["v", "v"]], requires: ["kind"], docs: GRAPH_DOCS_BASE + "/docs/cypher-api" },
+  { name: "anycastDnsRootSovereignty", mode: "flow", keyless: false, slug: "anycast-dns-root-sovereignty", primary: "country", inputs: ["country"], params: ["instanceType"], summary: "Assess how resilient a country's core DNS is if it were cut off from the world.", docs: GRAPH_DOCS_BASE + "/docs/recipes/compliance" },
+  { name: "attackPath", mode: "flow", keyless: false, slug: "attack-path", primary: "value", inputs: ["value", "other"], params: ["level"], summary: "Find the choke points an attacker would target - and how any two things connect.", docs: GRAPH_DOCS_BASE + "/docs/recipes/attack-path" },
+  { name: "attackSurface", mode: "flow", keyless: false, slug: "attack-surface", primary: "domain", inputs: ["domain"], params: ["level"], summary: "Map everything about a domain that's exposed to the outside world, scored for risk.", docs: GRAPH_DOCS_BASE + "/docs/recipes/pentest-recon" },
+  { name: "bgpHijackExposure", mode: "flow", keyless: false, slug: "bgp-hijack-exposure", primary: "value", inputs: ["value"], params: [], summary: "Grade a network's routing security and trace conflicts to the domains they'd expose.", docs: GRAPH_DOCS_BASE + "/docs/recipes/bgp-routing" },
+  { name: "blastRadius", mode: "flow", keyless: false, slug: "blast-radius", primary: "indicator", inputs: ["indicator"], params: ["depth"], summary: "Pick one asset and see what would break if it failed - and what it depends on in turn.", docs: GRAPH_DOCS_BASE + "/docs/recipes/soc" },
+  { name: "buildTakedownEvidencePackage", mode: "flow", keyless: false, slug: "build-takedown-evidence-package", primary: "domain", inputs: ["domain"], params: [], summary: "Assemble a ready-to-submit dossier for taking down a scam or phishing domain.", docs: GRAPH_DOCS_BASE + "/docs/recipes/threat-intel" },
+  { name: "discoverAiAgentInfrastructure", mode: "flow", keyless: false, slug: "discover-ai-agent-infrastructure", primary: "value", inputs: ["value"], params: [], summary: "Map an organisation's externally visible AI and agent endpoints from the outside.", docs: GRAPH_DOCS_BASE + "/docs/recipes/pentest-recon" },
+  { name: "indicator", mode: "flow", keyless: false, slug: "indicator", primary: "indicator", inputs: ["indicator"], params: [], summary: "Investigate one suspicious domain, IP, or network in depth and get a clear picture of the threat and everything connected to it.", docs: GRAPH_DOCS_BASE + "/docs/recipes/soc" },
+  { name: "indicatorEnrichment", mode: "flow", keyless: false, slug: "indicator-enrichment", primary: "value", inputs: ["value"], params: [], summary: "Turn one domain or IP into a full context card - owner, hosting, mail, location, reputation at a glance.", docs: GRAPH_DOCS_BASE + "/docs/recipes/dns-email" },
+  { name: "infrastructureMapping", mode: "flow", keyless: false, slug: "infrastructure-mapping", primary: "value", inputs: ["value"], params: ["level"], summary: "Trace one indicator to its true owner and full estate, even behind privacy screens and CDNs.", docs: GRAPH_DOCS_BASE + "/docs/recipes/compliance" },
+  { name: "mapSupplyChainConcentration", mode: "flow", keyless: false, slug: "map-supply-chain-concentration", primary: "domain", inputs: ["domain"], params: [], summary: "Grade an organisation for over-reliance on single providers, regions, or facilities.", docs: GRAPH_DOCS_BASE + "/docs/recipes/compliance" },
+  { name: "nameserverHijackDnsConsistency", mode: "flow", keyless: false, slug: "nameserver-hijack-dns-consistency", primary: "value", inputs: ["value"], params: [], summary: "Check a domain's name servers for the misconfigurations that enable DNS hijacking.", docs: GRAPH_DOCS_BASE + "/docs/recipes/dns-email" },
+  { name: "routeHealth", mode: "flow", keyless: false, slug: "route-health", primary: "target", inputs: ["target"], params: [], summary: "Profile a network or address block into a full routing and reachability health card.", docs: GRAPH_DOCS_BASE + "/docs/recipes/bgp-routing" },
+  { name: "subdomainTakeover", mode: "flow", keyless: false, slug: "subdomain-takeover", primary: "value", inputs: ["value"], params: [], summary: "Find subdomains that point at abandoned services an attacker could claim.", docs: GRAPH_DOCS_BASE + "/docs/recipes/pentest-recon" },
+  { name: "typosquat", mode: "flow", keyless: false, slug: "typosquat", primary: "domain", inputs: ["domain"], params: [], summary: "Find registered look-alikes of your brand and check which ones are dangerous.", docs: GRAPH_DOCS_BASE + "/docs/recipes/brand-protection" },
+  { name: "identify", mode: "direct", keyless: true, input: "v", cypher: "CALL whisper.identify([$v]) YIELD host, vendor_id, canonical_name, category, roles, host_class, band", summary: "Name the vendor and operator role behind a host or IP in one call.", docs: GRAPH_DOCS_BASE + "/docs/whisper-graph/procedures/identify" },
+  { name: "assess", mode: "direct", keyless: true, input: "v", cypher: "CALL whisper.assess([$v]) YIELD host, label, band, sub_labels, coverage, evidence", summary: "Get a labelled threat posture for a host or IP - malicious, benign, or unknown.", docs: GRAPH_DOCS_BASE + "/docs/whisper-graph/procedures" },
+  { name: "variants", mode: "direct", keyless: true, input: "v", cypher: "CALL whisper.variants($v) YIELD variant, method, exists, confidence", summary: "Generate look-alike domain variants of a brand and see which are registered.", docs: GRAPH_DOCS_BASE + "/docs/whisper-graph/procedures/variants" },
+  { name: "walk", mode: "direct", keyless: true, input: "v", cypher: "CALL whisper.walk($v) YIELD coverage, host, nearest_known_vendors, no_atlas_match, siblings", summary: "Walk the graph to the nearest known vendors behind a host, with the channel and confidence.", docs: GRAPH_DOCS_BASE + "/docs/whisper-graph/procedures" },
+  { name: "explain", mode: "direct", keyless: true, input: "v", cypher: "CALL whisper.explain($v) YIELD indicator, score, level, explanation, sources", summary: "Score an indicator against the threat feeds and explain exactly why.", docs: GRAPH_DOCS_BASE + "/docs/whisper-graph/procedures/explain" },
+  { name: "pslTldplusone", mode: "direct", keyless: true, input: "v", cypher: "CALL whisper.psl.tldPlusOne($v) YIELD apex", summary: "Reduce any hostname to its registrable apex (eTLD+1) via the Public Suffix List.", docs: GRAPH_DOCS_BASE + "/docs/whisper-graph/procedures/helpers" },
+  { name: "pslAffiliation", mode: "direct", keyless: true, input: "v", cypher: "CALL whisper.psl.affiliation($v) YIELD found, suffix, submitterOrg, submitterLogin, evidenceKind, confidence", summary: "Check whether a domain is a PSL private-section suffix and who submitted it.", docs: GRAPH_DOCS_BASE + "/docs/whisper-graph/procedures/helpers" },
+  { name: "origins", mode: "direct", keyless: true, input: "v", cypher: "CALL whisper.origins($v) YIELD ip, confidence, methods, asn, asnName, kind", summary: "Find the real origin IPs behind a CDN-fronted domain, ranked by confidence.", docs: GRAPH_DOCS_BASE + "/docs/whisper-graph/procedures/origins" },
+  { name: "history", mode: "direct", keyless: true, input: "v", cypher: "CALL whisper.history($v)", summary: "Get the full historical WHOIS timeline for a domain.", docs: GRAPH_DOCS_BASE + "/docs/whisper-graph/procedures/history" },
+  { name: "historyWhois", mode: "direct", keyless: true, input: "v", cypher: "CALL whisper.history.whois($v) YIELD queryTime, createDate, updateDate, expiryDate, registrar, registrant, country, nameServers", summary: "Get the WHOIS-only historical timeline for a domain.", docs: GRAPH_DOCS_BASE + "/docs/whisper-graph/procedures/history" },
+  { name: "asset", mode: "direct", keyless: true, input: "v", cypher: "CALL whisper.asSet($v) YIELD asSetName, memberAsn, sourceRir", summary: "List the member ASNs of an AS-SET macro.", docs: GRAPH_DOCS_BASE + "/docs/whisper-graph/procedures" },
+  { name: "lookupTorRelay", mode: "direct", keyless: true, input: "v", cypher: "CALL whisper.lookupTorRelay($v) YIELD indicator, found, fingerprint, exitAddressCount, source, ingestedAt", summary: "Check whether an IP is a known Tor exit relay.", docs: GRAPH_DOCS_BASE + "/docs/whisper-graph/procedures/helpers" },
+  { name: "dbSchema", mode: "direct", keyless: true, input: null, cypher: "CALL db.schema()", summary: "List every node and relationship type in the graph with counts and examples.", docs: GRAPH_DOCS_BASE + "/docs/whisper-graph/schema" },
+  { name: "submit", mode: "direct", keyless: false, proc: "whisper.submit", fields: [["kind", "kind"], ["identifierKind", "identifier_kind"], ["value", "value"], ["observationId", "observation_id"], ["confidence", "confidence"], ["firstSeen", "first_seen"], ["provenance", "provenance"], ["query", "query"], ["results", "results"], ["comment", "comment"], ["severity", "severity"], ["v", "v"]], requires: ["kind"], summary: "Contribute an indicator observation or feedback back into the graph (requires an API key).", docs: GRAPH_DOCS_BASE + "/docs/cypher-api" },
 ];
 // END GENERATED: graph catalog
 
@@ -614,6 +627,25 @@ function graphValue(name, value) {
 async function graphQuery(cypher, params, opts = {}) {
   if (!cypher || !String(cypher).trim()) throw new WhisperError("graph.query() needs a Cypher string");
   return callGraph(String(cypher), params || {}, opts, "query");
+}
+
+/**
+ * Discover the whole catalog: every graph method with `{ method, keyless, mode, summary,
+ * params, docsUrl }` - baked from the Whisper query catalog at generation time, so it
+ * needs no key and no network. `keyless: true` marks the direct read verbs that run with
+ * no key at all; `params` are the method's input names (a flow's inputs, a direct verb's
+ * $-parameter, the submit fields). Call any method by name, or check its docsUrl.
+ * @see https://www.whisper.security/docs/recipes
+ */
+function graphRecipes() {
+  return GRAPH_METHODS.map((m) => ({
+    method: m.name,
+    keyless: !!m.keyless,
+    mode: m.mode,
+    summary: m.summary,
+    params: m.mode === "flow" ? m.inputs.slice() : m.fields ? m.fields.map(([, param]) => param) : m.input ? [m.input] : [],
+    docsUrl: m.docs,
+  }));
 }
 
 // ── Flow runner (gallery/run, Server-Sent Events) ───────────────────────────────────
@@ -710,7 +742,7 @@ async function callFlow(m, input, opts = {}) {
   if (!key) {
     throw new WhisperError(
       `\`graph.${m.name}\` needs a Whisper API key: pass { apiKey } or set WHISPER_API_KEY. ` +
-        "(verify/verifyDetails/rdap are keyless and need no key; flows run keyed on the workflow runner.)"
+        "(The graph's direct read verbs run keyless; flows run keyed on the workflow runner.)"
     );
   }
   const body = flowWireBody(m, input);
@@ -840,12 +872,13 @@ function makeMapCall(m) {
   };
 }
 
-// Build the namespace from the generated catalog table: query + one method per entry.
-// Direct methods run their catalog Cypher; the map-call write builds its parameter map;
-// flow methods execute on the workflow runner. Every method carries its canonical docs
-// URL as `.docs` (docsBase + the entry's docPath).
-const graph = { query: graphQuery };
+// Build the namespace from the generated catalog table: query + recipes + one method per
+// entry. Direct methods run their catalog Cypher (the 13 keyless reads never require a
+// key); the map-call write builds its parameter map; flow methods execute on the workflow
+// runner. Every method carries its canonical docs URL as `.docs` (docsBase + docPath).
+const graph = { query: graphQuery, recipes: graphRecipes };
 graph.query.docs = GRAPH_DOCS_BASE + "/docs/cypher-api";
+graph.recipes.docs = GRAPH_DOCS_BASE + "/docs/recipes";
 
 for (const m of GRAPH_METHODS) {
   if (m.mode === "flow") {
@@ -853,9 +886,9 @@ for (const m of GRAPH_METHODS) {
   } else if (m.fields) {
     graph[m.name] = makeMapCall(m);
   } else if (m.input) {
-    graph[m.name] = async (value, opts = {}) => callGraph(m.cypher, { [m.input]: graphValue(m.name, value) }, opts, m.name);
+    graph[m.name] = async (value, opts = {}) => callGraph(m.cypher, { [m.input]: graphValue(m.name, value) }, opts, m.name, m.keyless);
   } else {
-    graph[m.name] = async (opts = {}) => callGraph(m.cypher, {}, opts, m.name);
+    graph[m.name] = async (opts = {}) => callGraph(m.cypher, {}, opts, m.name, m.keyless);
   }
   graph[m.name].docs = m.docs;
 }

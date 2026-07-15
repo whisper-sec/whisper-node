@@ -151,18 +151,35 @@ export function identity(opts?: IdentityOptions): Promise<AgentItem | null>;
 export function agent(sel: string, opts?: ControlOptions): Promise<AgentItem | null>;
 export function agent(opts?: AgentSelectOptions): Promise<AgentItem | null>;
 
-// ── Graph (keyed: Cypher + flows over the Whisper Security graph) ────────────────────
-// The intelligence half of the keyed surface. Postel two-tier: the keyless identity calls
-// above (verify/verifyDetails/rdap) run with no key and no Cypher; this whole `graph`
-// namespace is KEYED (Kaveh's rule: if it is Cypher, it needs a key). The 14 `direct`
-// methods POST their catalog Cypher to /api/query; the 15 `flow` methods execute on the
-// workflow runner (POST gallery/run, Server-Sent Events) and resolve to the collected
-// stream. The key rides only in `X-API-Key`. The method surface below is GENERATED from
-// the Whisper query catalog by scripts/gen-graph.mjs; every method's docs live at the
-// `@see` URL and are also on the function itself as `.docs`.
+// ── Graph (the Whisper Security graph: Cypher intelligence, two-tier) ────────────────
+// The intelligence pillar, Postel two-tier with both halves honest: the 13 direct READ
+// verbs (identify, assess, variants, walk, explain, origins, history, and friends) run
+// KEYLESS - no key at all, a rate-limited taste with real answers; a key ({ apiKey } or
+// WHISPER_API_KEY) lifts the limit. Raw Cypher (`graph.query`), the 15 multi-step `flow`
+// methods (workflow runner: POST gallery/run, Server-Sent Events), and the `submit`
+// write stay KEYED. A present key rides only in `X-API-Key`; an absent one sends no auth
+// header at all. The method surface below is GENERATED from the Whisper query catalog by
+// scripts/gen-graph.mjs; every method's docs live at the `@see` URL and are also on the
+// function itself as `.docs`, and `graph.recipes()` lists the whole catalog.
 
-/** Per-call options for the keyed graph namespace (same shape as the control plane). */
+/** Per-call options for the graph namespace (same shape as the control plane). */
 export interface GraphOptions extends ControlOptions {}
+
+/** One catalog entry from `graph.recipes()`: a graph method and its two-tier access. */
+export interface GraphRecipe {
+  /** The method name on the `graph` namespace (e.g. "assess", "typosquat"). */
+  method: string;
+  /** True for the 13 direct read verbs that run with no key at all (rate-limited). */
+  keyless: boolean;
+  /** "direct" (one Cypher read/write) or "flow" (multi-step, workflow runner). */
+  mode: "direct" | "flow";
+  /** What the method answers, in one line. */
+  summary: string;
+  /** The method's input names (a flow's inputs, a direct verb's $-parameter, the submit fields). */
+  params: string[];
+  /** The canonical docs page for this method. */
+  docsUrl: string;
+}
 
 /** Result of a keyed graph query. `rows` are objects keyed by column name. */
 export interface GraphResult {
@@ -220,17 +237,28 @@ export interface GraphFlowResult {
 }
 
 /**
- * The keyed graph namespace: one typed method per catalog entry (14 direct Cypher reads +
- * 15 workflow-runner flows), plus a raw `query` escape hatch. Every method needs a key
- * (`{ apiKey }` or `WHISPER_API_KEY`) and carries its canonical docs URL as `.docs`.
+ * The graph namespace: one typed method per catalog entry (14 direct Cypher reads +
+ * 15 workflow-runner flows), plus a raw `query` escape hatch and `recipes()` discovery.
+ * Two-tier: the 13 direct read verbs run keyless (no key needed, rate-limited; a key
+ * lifts the limit); `query`, the flows, and `submit` need a key (`{ apiKey }` or
+ * `WHISPER_API_KEY`). Every method carries its canonical docs URL as `.docs`.
  */
 export interface GraphNamespace {
   /**
-   * Raw Cypher escape hatch: run arbitrary Cypher with `params` bound server-side as
-   * $-parameters. Returns the full `{columns,rows,statistics}`.
+   * Raw Cypher escape hatch (KEYED): run arbitrary Cypher with `params` bound
+   * server-side as $-parameters. Returns the full `{columns,rows,statistics}`.
    * @see https://www.whisper.security/docs/cypher-api
    */
   query(cypher: string, params?: Record<string, unknown>, opts?: GraphOptions): Promise<GraphResult>;
+
+  /**
+   * Discover the whole catalog: every graph method with `{ method, keyless, mode,
+   * summary, params, docsUrl }`. Baked from the Whisper query catalog at generation
+   * time - no key, no network. `keyless: true` marks the direct read verbs that run
+   * with no key at all.
+   * @see https://www.whisper.security/docs/recipes
+   */
+  recipes(): GraphRecipe[];
 
   // BEGIN GENERATED: graph catalog (scripts/gen-graph.mjs) - do not edit by hand
   /**
@@ -437,7 +465,9 @@ export interface GraphNamespace {
    * Resolves a host/IP to its canonical vendor, category and operator roles (DNS_OPERATOR / CDN
    * / ORIGIN_AS / MAIL_RECEIVER) with a confidence band.
    *
-   * KEYED. Cypher: CALL whisper.identify([$v]) YIELD host, vendor_id, canonical_name, category, roles, host_class, band
+   * KEYLESS direct read: runs with NO key at all (a rate-limited taste, real
+   * answers); pass a key ({ apiKey } or WHISPER_API_KEY) to lift the limit.
+   * Cypher: CALL whisper.identify([$v]) YIELD host, vendor_id, canonical_name, category, roles, host_class, band
    * Returns columns: host, vendor_id, canonical_name, category, roles, host_class, band.
    * @see https://www.whisper.security/docs/whisper-graph/procedures/identify
    */
@@ -449,7 +479,9 @@ export interface GraphNamespace {
    * Returns a posture label + severity band + sub-labels + coverage + evidence for an indicator;
    * benign-allowlisted vs malicious-evidenced, never a bare score.
    *
-   * KEYED. Cypher: CALL whisper.assess([$v]) YIELD host, label, band, sub_labels, coverage, evidence
+   * KEYLESS direct read: runs with NO key at all (a rate-limited taste, real
+   * answers); pass a key ({ apiKey } or WHISPER_API_KEY) to lift the limit.
+   * Cypher: CALL whisper.assess([$v]) YIELD host, label, band, sub_labels, coverage, evidence
    * Returns columns: host, label, band, sub_labels, coverage, evidence.
    * @see https://www.whisper.security/docs/whisper-graph/procedures
    */
@@ -461,7 +493,9 @@ export interface GraphNamespace {
    * Enumerates permutations (omission, bitsquatting, ...) of a domain, flags which exist, with a
    * per-variant confidence.
    *
-   * KEYED. Cypher: CALL whisper.variants($v) YIELD variant, method, exists, confidence
+   * KEYLESS direct read: runs with NO key at all (a rate-limited taste, real
+   * answers); pass a key ({ apiKey } or WHISPER_API_KEY) to lift the limit.
+   * Cypher: CALL whisper.variants($v) YIELD variant, method, exists, confidence
    * Returns columns: variant, method, exists, confidence.
    * @see https://www.whisper.security/docs/whisper-graph/procedures/variants
    */
@@ -474,7 +508,9 @@ export interface GraphNamespace {
    * ORIGIN_AS) and confidence, plus siblings and coverage - explains WHY a host maps to a
    * vendor.
    *
-   * KEYED. Cypher: CALL whisper.walk($v) YIELD coverage, host, nearest_known_vendors, no_atlas_match, siblings
+   * KEYLESS direct read: runs with NO key at all (a rate-limited taste, real
+   * answers); pass a key ({ apiKey } or WHISPER_API_KEY) to lift the limit.
+   * Cypher: CALL whisper.walk($v) YIELD coverage, host, nearest_known_vendors, no_atlas_match, siblings
    * Returns columns: coverage, host, nearest_known_vendors, no_atlas_match, siblings.
    * @see https://www.whisper.security/docs/whisper-graph/procedures
    */
@@ -487,7 +523,9 @@ export interface GraphNamespace {
    * weight, firstSeen/lastSeen). Two live forms: bare CALL explain($v) (full columns) and CALL
    * whisper.explain($v) (restricted YIELD).
    *
-   * KEYED. Cypher: CALL whisper.explain($v) YIELD indicator, score, level, explanation, sources
+   * KEYLESS direct read: runs with NO key at all (a rate-limited taste, real
+   * answers); pass a key ({ apiKey } or WHISPER_API_KEY) to lift the limit.
+   * Cypher: CALL whisper.explain($v) YIELD indicator, score, level, explanation, sources
    * Returns columns: indicator, score, level, explanation, sources.
    * @see https://www.whisper.security/docs/whisper-graph/procedures/explain
    */
@@ -499,7 +537,9 @@ export interface GraphNamespace {
    * PSL-correct eTLD+1: www.foo.co.uk -> foo.co.uk. The right way to group hosts by the thing
    * someone actually registered.
    *
-   * KEYED. Cypher: CALL whisper.psl.tldPlusOne($v) YIELD apex
+   * KEYLESS direct read: runs with NO key at all (a rate-limited taste, real
+   * answers); pass a key ({ apiKey } or WHISPER_API_KEY) to lift the limit.
+   * Cypher: CALL whisper.psl.tldPlusOne($v) YIELD apex
    * Returns columns: apex.
    * @see https://www.whisper.security/docs/whisper-graph/procedures/helpers
    */
@@ -511,7 +551,9 @@ export interface GraphNamespace {
    * For a PSL private-section suffix, returns the submitting org/login and evidence kind +
    * confidence; found=false for ordinary registrable domains.
    *
-   * KEYED. Cypher: CALL whisper.psl.affiliation($v) YIELD found, suffix, submitterOrg, submitterLogin, evidenceKind, confidence
+   * KEYLESS direct read: runs with NO key at all (a rate-limited taste, real
+   * answers); pass a key ({ apiKey } or WHISPER_API_KEY) to lift the limit.
+   * Cypher: CALL whisper.psl.affiliation($v) YIELD found, suffix, submitterOrg, submitterLogin, evidenceKind, confidence
    * Returns columns: found, suffix, submitterOrg, submitterLogin, evidenceKind, confidence.
    * @see https://www.whisper.security/docs/whisper-graph/procedures/helpers
    */
@@ -523,7 +565,9 @@ export interface GraphNamespace {
    * Candidate origin IPs behind a CDN with confidence, the methods that found them (e.g.
    * links_to), and the hosting ASN/name - de-cloaks to the real server.
    *
-   * KEYED. Cypher: CALL whisper.origins($v) YIELD ip, confidence, methods, asn, asnName, kind
+   * KEYLESS direct read: runs with NO key at all (a rate-limited taste, real
+   * answers); pass a key ({ apiKey } or WHISPER_API_KEY) to lift the limit.
+   * Cypher: CALL whisper.origins($v) YIELD ip, confidence, methods, asn, asnName, kind
    * Returns columns: ip, confidence, methods, asn, asnName, kind.
    * @see https://www.whisper.security/docs/whisper-graph/procedures/origins
    */
@@ -535,7 +579,9 @@ export interface GraphNamespace {
    * Every observed WHOIS snapshot over time: create/update/expiry, registrar, registrant,
    * country, nameservers - the ownership/registration story.
    *
-   * KEYED. Cypher: CALL whisper.history($v)
+   * KEYLESS direct read: runs with NO key at all (a rate-limited taste, real
+   * answers); pass a key ({ apiKey } or WHISPER_API_KEY) to lift the limit.
+   * Cypher: CALL whisper.history($v)
    * Returns columns: indicator, type, queryTime, createDate, updateDate, expiryDate, registrar, registrant, country, nameServers, cached.
    * @see https://www.whisper.security/docs/whisper-graph/procedures/history
    */
@@ -547,7 +593,9 @@ export interface GraphNamespace {
    * The registration-record projection of the history timeline: create/update/expiry, registrar,
    * registrant, country, nameservers per snapshot.
    *
-   * KEYED. Cypher: CALL whisper.history.whois($v) YIELD queryTime, createDate, updateDate, expiryDate, registrar, registrant, country, nameServers
+   * KEYLESS direct read: runs with NO key at all (a rate-limited taste, real
+   * answers); pass a key ({ apiKey } or WHISPER_API_KEY) to lift the limit.
+   * Cypher: CALL whisper.history.whois($v) YIELD queryTime, createDate, updateDate, expiryDate, registrar, registrant, country, nameServers
    * Returns columns: queryTime, createDate, updateDate, expiryDate, registrar, registrant, country, nameServers.
    * @see https://www.whisper.security/docs/whisper-graph/procedures/history
    */
@@ -560,7 +608,9 @@ export interface GraphNamespace {
    * STRING as-set name, not an integer ASN. (Membership is sparsely populated in the current
    * graph.)
    *
-   * KEYED. Cypher: CALL whisper.asSet($v) YIELD asSetName, memberAsn, sourceRir
+   * KEYLESS direct read: runs with NO key at all (a rate-limited taste, real
+   * answers); pass a key ({ apiKey } or WHISPER_API_KEY) to lift the limit.
+   * Cypher: CALL whisper.asSet($v) YIELD asSetName, memberAsn, sourceRir
    * Returns columns: asSetName, memberAsn, sourceRir.
    * @see https://www.whisper.security/docs/whisper-graph/procedures
    */
@@ -572,7 +622,9 @@ export interface GraphNamespace {
    * Live Tor exit-node check: found + fingerprint + exit-address count + source + ingest time
    * for an IPv4.
    *
-   * KEYED. Cypher: CALL whisper.lookupTorRelay($v) YIELD indicator, found, fingerprint, exitAddressCount, source, ingestedAt
+   * KEYLESS direct read: runs with NO key at all (a rate-limited taste, real
+   * answers); pass a key ({ apiKey } or WHISPER_API_KEY) to lift the limit.
+   * Cypher: CALL whisper.lookupTorRelay($v) YIELD indicator, found, fingerprint, exitAddressCount, source, ingestedAt
    * Returns columns: indicator, found, fingerprint, exitAddressCount, source, ingestedAt.
    * @see https://www.whisper.security/docs/whisper-graph/procedures/helpers
    */
@@ -584,7 +636,9 @@ export interface GraphNamespace {
    * The self-describing schema: node/relationship types with counts, descriptions, examples,
    * source/target labels and query best-practices - the map of what the graph holds.
    *
-   * KEYED. Cypher: CALL db.schema()
+   * KEYLESS direct read: runs with NO key at all (a rate-limited taste, real
+   * answers); pass a key ({ apiKey } or WHISPER_API_KEY) to lift the limit.
+   * Cypher: CALL db.schema()
    * Returns columns: type, name, count, description, example, sourceLabels, targetLabels, fastPatterns, slowPatterns, bestPractices.
    * @see https://www.whisper.security/docs/whisper-graph/schema
    */
@@ -605,5 +659,5 @@ export interface GraphNamespace {
   // END GENERATED: graph catalog
 }
 
-/** The keyed graph namespace. `import { graph } from "whisper-id"`. */
+/** The Whisper security graph namespace (two-tier). `import { graph } from "whisper-id"`. */
 export const graph: GraphNamespace;
