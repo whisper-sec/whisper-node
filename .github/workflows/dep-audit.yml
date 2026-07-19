@@ -1,0 +1,28 @@
+name: dep-audit
+
+# Continuous dependency-vulnerability audit.
+# Fails the build on any HIGH or CRITICAL advisory in the dependency tree.
+# Runs on every pull request and every push to the default branch, plus a
+# weekly off-peak sweep so a newly-disclosed advisory is caught even when no
+# new commit lands. Complements the pre-publish security review.
+# No lockfile is committed, so npm install resolves the tree before auditing.
+on:
+  pull_request:
+  push:
+    branches: [main]
+  schedule:
+    - cron: "41 4 * * 1"
+
+permissions:
+  contents: read
+
+jobs:
+  npm-audit:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+      - run: npm install --no-fund
+      - run: npm audit --audit-level=high
