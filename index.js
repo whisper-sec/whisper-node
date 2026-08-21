@@ -203,7 +203,7 @@ export async function ip({ timeout = 60000 } = {}) {
 // read from opts.apiKey or $WHISPER_API_KEY and sent ONLY in the X-API-Key header.
 
 function controlUrl() {
-  return process.env.WHISPER_CONTROL_URL || "https://graph.whisper.security/api/query";
+  return process.env.WHISPER_CONTROL_URL || "https://graph.whisper.online/api/query";
 }
 
 // Conservative-emit (RFC 761): render a value as a Cypher literal so no input - however
@@ -464,7 +464,7 @@ export async function agent(sel = {}, maybeOpts) {
 // at all, a rate-limited taste (~100/window) with real answers; a key (opts.apiKey or
 // WHISPER_API_KEY) lifts the limit. Raw Cypher (graph.query), the 15 multi-step flows,
 // and the submit write channel stay KEYED. Everything POSTs to the SAME endpoint the
-// control plane uses (https://graph.whisper.security/api/query), reusing resolveKey() so
+// control plane uses (https://graph.whisper.online/api/query), reusing resolveKey() so
 // there is one auth path, not two: a present key rides ONLY in the X-API-Key header, an
 // absent one sends NO auth header at all. It does NOT go through the whisper.agents()
 // control wrapper: the graph contract is different (body {query,parameters}; reply
