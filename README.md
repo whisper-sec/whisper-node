@@ -172,7 +172,7 @@ Only **egress** and the CLI-backed calls (`register`, `egress`, `withEgress`, `i
 `whisper` CLI on your `PATH`:
 
 ```sh
-curl get.whisper.online | sh
+curl -fsSL https://get.whisper.online | sh
 ```
 
 (`$WHISPER_BIN` overrides the CLI path; `$WHISPER_CONTROL_URL` / `$WHISPER_GRAPH_URL` /
