@@ -1,6 +1,6 @@
 # whisper-id
 
-Three things for any Node agent, in one dependency-free package: query the **Whisper security graph** (3.6B nodes / 30B relationships, Cypher), give the agent a routable **IPv6 identity** with safe **egress**, and drive the full **control plane**.
+Three things for any Node agent, in one dependency-free package: query the **Whisper security graph** (billions of nodes joining the physical, network, naming, ownership and threat layers; live totals at nic.whisper.online/stats, Cypher), give the agent a routable **IPv6 identity** with safe **egress**, and drive the full **control plane**.
 
 ```sh
 npm i whisper-id
