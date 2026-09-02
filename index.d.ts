@@ -157,7 +157,7 @@ export function agent(opts?: AgentSelectOptions): Promise<AgentItem | null>;
 // KEYLESS - no key at all, a rate-limited taste with real answers; a key ({ apiKey } or
 // WHISPER_API_KEY) lifts the limit. Raw Cypher (`graph.query`), the 15 multi-step `flow`
 // methods (workflow runner: POST gallery/run, Server-Sent Events), and the `submit`
-// write stay KEYED. A present key rides only in `X-API-Key`; an absent one sends no auth
+// write are proxied up the same way. A present key rides only in `X-API-Key`; an absent one sends no auth
 // header at all. The method surface below is GENERATED from the Whisper query catalog by
 // scripts/gen-graph.mjs; every method's docs live at the `@see` URL and are also on the
 // function itself as `.docs`, and `graph.recipes()` lists the whole catalog.
@@ -181,7 +181,7 @@ export interface GraphRecipe {
   docsUrl: string;
 }
 
-/** Result of a keyed graph query. `rows` are objects keyed by column name. */
+/** Result of a graph query. `rows` are objects keyed by column name. */
 export interface GraphResult {
   columns: string[];
   rows: Record<string, unknown>[];
@@ -237,15 +237,18 @@ export interface GraphFlowResult {
 }
 
 /**
- * The graph namespace: one typed method per catalog entry (14 direct Cypher reads +
- * 15 workflow-runner flows), plus a raw `query` escape hatch and `recipes()` discovery.
- * Two-tier: the 13 direct read verbs run keyless (no key needed, rate-limited; a key
- * lifts the limit); `query`, the flows, and `submit` need a key (`{ apiKey }` or
- * `WHISPER_API_KEY`). Every method carries its canonical docs URL as `.docs`.
+ * The graph namespace: one typed method per catalog entry (13 direct Cypher reads,
+ * `submit`, and 15 workflow-runner flows), plus a raw `query` escape hatch and
+ * `recipes()` discovery. Every verb is proxied to the graph with a key if you have one
+ * and without if you do not: the graph owns the keyless policy and decides what to
+ * answer, so the SDK never refuses a call on your behalf. A key (`{ apiKey }` or
+ * `WHISPER_API_KEY`) lifts the keyless rate limit. The control plane (`whisper.agents`:
+ * agents, policy, logs, identity) is a separate surface and always requires a key.
+ * Every method carries its canonical docs URL as `.docs`.
  */
 export interface GraphNamespace {
   /**
-   * Raw Cypher escape hatch (KEYED): run arbitrary Cypher with `params` bound
+   * Raw Cypher escape hatch: run arbitrary Cypher with `params` bound
    * server-side as $-parameters. Returns the full `{columns,rows,statistics}`.
    * @see https://www.whisper.security/docs/cypher-api
    */
@@ -268,7 +271,7 @@ export interface GraphNamespace {
    * letters have in-country DNS_ROOT_INSTANCE anycast nodes, the Global-vs-Local split, the BGP
    * origin ASNs hosting them, and a resilience grade.
    *
-   * KEYED flow: streams Server-Sent Events from the workflow runner (slug "anycast-dns-root-sovereignty")
+   * Flow: streams Server-Sent Events from the workflow runner (slug "anycast-dns-root-sovereignty")
    * and resolves to the collected { slug, steps, complete, events }.
    * Inputs: country. Params: instanceType.
    * @see https://www.whisper.security/docs/recipes/compliance
@@ -281,7 +284,7 @@ export interface GraphNamespace {
    * From a starting foothold, finds shared dependencies whose compromise reaches furthest; for
    * any two indicators, traces how they are actually connected.
    *
-   * KEYED flow: streams Server-Sent Events from the workflow runner (slug "attack-path")
+   * Flow: streams Server-Sent Events from the workflow runner (slug "attack-path")
    * and resolves to the collected { slug, steps, complete, events }.
    * Inputs: value, other. Params: level.
    * @see https://www.whisper.security/docs/recipes/attack-path
@@ -294,7 +297,7 @@ export interface GraphNamespace {
    * Maps the full external footprint - subdomains, name/mail servers, registrant, third-party
    * services, connected web - and scores the exposure.
    *
-   * KEYED flow: streams Server-Sent Events from the workflow runner (slug "attack-surface")
+   * Flow: streams Server-Sent Events from the workflow runner (slug "attack-surface")
    * and resolves to the collected { slug, steps, complete, events }.
    * Inputs: domain. Params: level.
    * @see https://www.whisper.security/docs/recipes/pentest-recon
@@ -307,7 +310,7 @@ export interface GraphNamespace {
    * Grades a network on the conflicts/gaps that make route hijacking possible, then traces any
    * conflict to the specific domains and organisations exposed on the affected blocks.
    *
-   * KEYED flow: streams Server-Sent Events from the workflow runner (slug "bgp-hijack-exposure")
+   * Flow: streams Server-Sent Events from the workflow runner (slug "bgp-hijack-exposure")
    * and resolves to the collected { slug, steps, complete, events }.
    * Inputs: value.
    * @see https://www.whisper.security/docs/recipes/bgp-routing
@@ -320,7 +323,7 @@ export interface GraphNamespace {
    * Maps dependencies in both directions: everything that breaks if the asset fails (SPOFs) and
    * everything it relies on (its own DNS/mail/hosting/network supply chain).
    *
-   * KEYED flow: streams Server-Sent Events from the workflow runner (slug "blast-radius")
+   * Flow: streams Server-Sent Events from the workflow runner (slug "blast-radius")
    * and resolves to the collected { slug, steps, complete, events }.
    * Inputs: indicator. Params: depth.
    * @see https://www.whisper.security/docs/recipes/soc
@@ -333,7 +336,7 @@ export interface GraphNamespace {
    * One-pass takedown package: reputation verdict, owner (WHOIS), abuse-list listings, and
    * surrounding infrastructure, laid out ready to hand to a registrar/host.
    *
-   * KEYED flow: streams Server-Sent Events from the workflow runner (slug "build-takedown-evidence-package")
+   * Flow: streams Server-Sent Events from the workflow runner (slug "build-takedown-evidence-package")
    * and resolves to the collected { slug, steps, complete, events }.
    * Inputs: domain.
    * @see https://www.whisper.security/docs/recipes/threat-intel
@@ -346,7 +349,7 @@ export interface GraphNamespace {
    * Maps externally visible AI/agent hosts (API, model, agent) from the outside via heuristic
    * hostname patterns (api./mcp./ai./vector./llm./agent./chat./copilot.). Best-effort leads.
    *
-   * KEYED flow: streams Server-Sent Events from the workflow runner (slug "discover-ai-agent-infrastructure")
+   * Flow: streams Server-Sent Events from the workflow runner (slug "discover-ai-agent-infrastructure")
    * and resolves to the collected { slug, steps, complete, events }.
    * Inputs: value.
    * @see https://www.whisper.security/docs/recipes/pentest-recon
@@ -360,7 +363,7 @@ export interface GraphNamespace {
    * CDN, neighbouring infra), threat-checks each node, never inherits maliciousness from shared
    * infra; labelled posture, no score.
    *
-   * KEYED flow: streams Server-Sent Events from the workflow runner (slug "indicator")
+   * Flow: streams Server-Sent Events from the workflow runner (slug "indicator")
    * and resolves to the collected { slug, steps, complete, events }.
    * Inputs: indicator.
    * @see https://www.whisper.security/docs/recipes/soc
@@ -373,7 +376,7 @@ export interface GraphNamespace {
    * Fills the picture for one indicator: registrant (WHOIS), hosting + country, mail/name
    * servers, network behind it, reputation read.
    *
-   * KEYED flow: streams Server-Sent Events from the workflow runner (slug "indicator-enrichment")
+   * Flow: streams Server-Sent Events from the workflow runner (slug "indicator-enrichment")
    * and resolves to the collected { slug, steps, complete, events }.
    * Inputs: value.
    * @see https://www.whisper.security/docs/recipes/dns-email
@@ -386,7 +389,7 @@ export interface GraphNamespace {
    * Works out the true operator (even behind privacy WHOIS), de-cloaks CDN-fronted sites to real
    * servers, pivots to the rest of that owner's estate across every layer.
    *
-   * KEYED flow: streams Server-Sent Events from the workflow runner (slug "infrastructure-mapping")
+   * Flow: streams Server-Sent Events from the workflow runner (slug "infrastructure-mapping")
    * and resolves to the collected { slug, steps, complete, events }.
    * Inputs: value. Params: level.
    * @see https://www.whisper.security/docs/recipes/compliance
@@ -399,7 +402,7 @@ export interface GraphNamespace {
    * Grades how concentrated infra is - too much riding on one provider/region/data-centre/cable
    * landing - surfacing SPOFs for resilience and DORA/NIS2 fourth-party risk.
    *
-   * KEYED flow: streams Server-Sent Events from the workflow runner (slug "map-supply-chain-concentration")
+   * Flow: streams Server-Sent Events from the workflow runner (slug "map-supply-chain-concentration")
    * and resolves to the collected { slug, steps, complete, events }.
    * Inputs: domain.
    * @see https://www.whisper.security/docs/recipes/compliance
@@ -412,7 +415,7 @@ export interface GraphNamespace {
    * Audits delegation, flags stale/mismatched/lame nameservers, sizes each provider's share,
    * surfaces registry facts - catches delegation weakness before exploit.
    *
-   * KEYED flow: streams Server-Sent Events from the workflow runner (slug "nameserver-hijack-dns-consistency")
+   * Flow: streams Server-Sent Events from the workflow runner (slug "nameserver-hijack-dns-consistency")
    * and resolves to the collected { slug, steps, complete, events }.
    * Inputs: value.
    * @see https://www.whisper.security/docs/recipes/dns-email
@@ -425,7 +428,7 @@ export interface GraphNamespace {
    * Health card for a network/block: what it announces, peers/transit, single-upstream lean,
    * RPKI protection - the one-look reach & resilience report.
    *
-   * KEYED flow: streams Server-Sent Events from the workflow runner (slug "route-health")
+   * Flow: streams Server-Sent Events from the workflow runner (slug "route-health")
    * and resolves to the collected { slug, steps, complete, events }.
    * Inputs: target.
    * @see https://www.whisper.security/docs/recipes/bgp-routing
@@ -439,7 +442,7 @@ export interface GraphNamespace {
    * no longer resolves) so you can reclaim/remove before someone else does. CNAME layer is
    * prod-ahead.
    *
-   * KEYED flow: streams Server-Sent Events from the workflow runner (slug "subdomain-takeover")
+   * Flow: streams Server-Sent Events from the workflow runner (slug "subdomain-takeover")
    * and resolves to the collected { slug, steps, complete, events }.
    * Inputs: value.
    * @see https://www.whisper.security/docs/recipes/pentest-recon
@@ -452,7 +455,7 @@ export interface GraphNamespace {
    * Finds registered impersonations across misspellings/risky TLDs, separates your own defensive
    * domains from strangers', flags fresh/privacy/abuse-listed ones into a prioritised list.
    *
-   * KEYED flow: streams Server-Sent Events from the workflow runner (slug "typosquat")
+   * Flow: streams Server-Sent Events from the workflow runner (slug "typosquat")
    * and resolves to the collected { slug, steps, complete, events }.
    * Inputs: domain.
    * @see https://www.whisper.security/docs/recipes/brand-protection
@@ -465,7 +468,7 @@ export interface GraphNamespace {
    * Resolves a host/IP to its canonical vendor, category and operator roles (DNS_OPERATOR / CDN
    * / ORIGIN_AS / MAIL_RECEIVER) with a confidence band.
    *
-   * KEYLESS direct read: runs with NO key at all (a rate-limited taste, real
+   * Direct read: answers with NO key at all (a rate-limited taste, real
    * answers); pass a key ({ apiKey } or WHISPER_API_KEY) to lift the limit.
    * Cypher: CALL whisper.identify([$v]) YIELD host, vendor_id, canonical_name, category, roles, host_class, band
    * Returns columns: host, vendor_id, canonical_name, category, roles, host_class, band.
@@ -479,7 +482,7 @@ export interface GraphNamespace {
    * Returns a posture label + severity band + sub-labels + coverage + evidence for an indicator;
    * benign-allowlisted vs malicious-evidenced, never a bare score.
    *
-   * KEYLESS direct read: runs with NO key at all (a rate-limited taste, real
+   * Direct read: answers with NO key at all (a rate-limited taste, real
    * answers); pass a key ({ apiKey } or WHISPER_API_KEY) to lift the limit.
    * Cypher: CALL whisper.assess([$v]) YIELD host, label, band, sub_labels, coverage, evidence
    * Returns columns: host, label, band, sub_labels, coverage, evidence.
@@ -493,7 +496,7 @@ export interface GraphNamespace {
    * Enumerates permutations (omission, bitsquatting, ...) of a domain, flags which exist, with a
    * per-variant confidence.
    *
-   * KEYLESS direct read: runs with NO key at all (a rate-limited taste, real
+   * Direct read: answers with NO key at all (a rate-limited taste, real
    * answers); pass a key ({ apiKey } or WHISPER_API_KEY) to lift the limit.
    * Cypher: CALL whisper.variants($v) YIELD variant, method, exists, confidence
    * Returns columns: variant, method, exists, confidence.
@@ -508,7 +511,7 @@ export interface GraphNamespace {
    * ORIGIN_AS) and confidence, plus siblings and coverage - explains WHY a host maps to a
    * vendor.
    *
-   * KEYLESS direct read: runs with NO key at all (a rate-limited taste, real
+   * Direct read: answers with NO key at all (a rate-limited taste, real
    * answers); pass a key ({ apiKey } or WHISPER_API_KEY) to lift the limit.
    * Cypher: CALL whisper.walk($v) YIELD coverage, host, nearest_known_vendors, no_atlas_match, siblings
    * Returns columns: coverage, host, nearest_known_vendors, no_atlas_match, siblings.
@@ -523,7 +526,7 @@ export interface GraphNamespace {
    * weight, firstSeen/lastSeen). Two live forms: bare CALL explain($v) (full columns) and CALL
    * whisper.explain($v) (restricted YIELD).
    *
-   * KEYLESS direct read: runs with NO key at all (a rate-limited taste, real
+   * Direct read: answers with NO key at all (a rate-limited taste, real
    * answers); pass a key ({ apiKey } or WHISPER_API_KEY) to lift the limit.
    * Cypher: CALL whisper.explain($v) YIELD indicator, score, level, explanation, sources
    * Returns columns: indicator, score, level, explanation, sources.
@@ -537,7 +540,7 @@ export interface GraphNamespace {
    * PSL-correct eTLD+1: www.foo.co.uk -> foo.co.uk. The right way to group hosts by the thing
    * someone actually registered.
    *
-   * KEYLESS direct read: runs with NO key at all (a rate-limited taste, real
+   * Direct read: answers with NO key at all (a rate-limited taste, real
    * answers); pass a key ({ apiKey } or WHISPER_API_KEY) to lift the limit.
    * Cypher: CALL whisper.psl.tldPlusOne($v) YIELD apex
    * Returns columns: apex.
@@ -551,7 +554,7 @@ export interface GraphNamespace {
    * For a PSL private-section suffix, returns the submitting org/login and evidence kind +
    * confidence; found=false for ordinary registrable domains.
    *
-   * KEYLESS direct read: runs with NO key at all (a rate-limited taste, real
+   * Direct read: answers with NO key at all (a rate-limited taste, real
    * answers); pass a key ({ apiKey } or WHISPER_API_KEY) to lift the limit.
    * Cypher: CALL whisper.psl.affiliation($v) YIELD found, suffix, submitterOrg, submitterLogin, evidenceKind, confidence
    * Returns columns: found, suffix, submitterOrg, submitterLogin, evidenceKind, confidence.
@@ -565,7 +568,7 @@ export interface GraphNamespace {
    * Candidate origin IPs behind a CDN with confidence, the methods that found them (e.g.
    * links_to), and the hosting ASN/name - de-cloaks to the real server.
    *
-   * KEYLESS direct read: runs with NO key at all (a rate-limited taste, real
+   * Direct read: answers with NO key at all (a rate-limited taste, real
    * answers); pass a key ({ apiKey } or WHISPER_API_KEY) to lift the limit.
    * Cypher: CALL whisper.origins($v) YIELD ip, confidence, methods, asn, asnName, kind
    * Returns columns: ip, confidence, methods, asn, asnName, kind.
@@ -579,7 +582,7 @@ export interface GraphNamespace {
    * Every observed WHOIS snapshot over time: create/update/expiry, registrar, registrant,
    * country, nameservers - the ownership/registration story.
    *
-   * KEYLESS direct read: runs with NO key at all (a rate-limited taste, real
+   * Direct read: answers with NO key at all (a rate-limited taste, real
    * answers); pass a key ({ apiKey } or WHISPER_API_KEY) to lift the limit.
    * Cypher: CALL whisper.history($v)
    * Returns columns: indicator, type, queryTime, createDate, updateDate, expiryDate, registrar, registrant, country, nameServers, cached.
@@ -593,7 +596,7 @@ export interface GraphNamespace {
    * The registration-record projection of the history timeline: create/update/expiry, registrar,
    * registrant, country, nameservers per snapshot.
    *
-   * KEYLESS direct read: runs with NO key at all (a rate-limited taste, real
+   * Direct read: answers with NO key at all (a rate-limited taste, real
    * answers); pass a key ({ apiKey } or WHISPER_API_KEY) to lift the limit.
    * Cypher: CALL whisper.history.whois($v) YIELD queryTime, createDate, updateDate, expiryDate, registrar, registrant, country, nameServers
    * Returns columns: queryTime, createDate, updateDate, expiryDate, registrar, registrant, country, nameServers.
@@ -608,7 +611,7 @@ export interface GraphNamespace {
    * STRING as-set name, not an integer ASN. (Membership is sparsely populated in the current
    * graph.)
    *
-   * KEYLESS direct read: runs with NO key at all (a rate-limited taste, real
+   * Direct read: answers with NO key at all (a rate-limited taste, real
    * answers); pass a key ({ apiKey } or WHISPER_API_KEY) to lift the limit.
    * Cypher: CALL whisper.asSet($v) YIELD asSetName, memberAsn, sourceRir
    * Returns columns: asSetName, memberAsn, sourceRir.
@@ -622,7 +625,7 @@ export interface GraphNamespace {
    * Live Tor exit-node check: found + fingerprint + exit-address count + source + ingest time
    * for an IPv4.
    *
-   * KEYLESS direct read: runs with NO key at all (a rate-limited taste, real
+   * Direct read: answers with NO key at all (a rate-limited taste, real
    * answers); pass a key ({ apiKey } or WHISPER_API_KEY) to lift the limit.
    * Cypher: CALL whisper.lookupTorRelay($v) YIELD indicator, found, fingerprint, exitAddressCount, source, ingestedAt
    * Returns columns: indicator, found, fingerprint, exitAddressCount, source, ingestedAt.
@@ -636,7 +639,7 @@ export interface GraphNamespace {
    * The self-describing schema: node/relationship types with counts, descriptions, examples,
    * source/target labels and query best-practices - the map of what the graph holds.
    *
-   * KEYLESS direct read: runs with NO key at all (a rate-limited taste, real
+   * Direct read: answers with NO key at all (a rate-limited taste, real
    * answers); pass a key ({ apiKey } or WHISPER_API_KEY) to lift the limit.
    * Cypher: CALL db.schema()
    * Returns columns: type, name, count, description, example, sourceLabels, targetLabels, fastPatterns, slowPatterns, bestPractices.
@@ -647,10 +650,11 @@ export interface GraphNamespace {
   /**
    * Contribute an indicator observation or feedback back into the graph (requires an API key).
    *
-   * The write channel: submit an indicator/feedback with an attributable API key (anonymous
-   * submits are refused to preserve K-anonymity). Keyed-only by design.
+   * The write channel: submit an indicator/feedback with an attributable API key. The graph
+   * requires a key carrying the submit:write scope and answers anonymous callers with a clear
+   * 400, to preserve K-anonymity.
    *
-   * KEYED write: CALL whisper.submit({...}) with the payload fields bound as $-parameters.
+   * Write: CALL whisper.submit({...}) with the payload fields bound as $-parameters.
    * Fields: kind, identifier_kind, value, observation_id, confidence, first_seen, provenance, query, results, comment, severity, v (kind required).
    * Returns columns: observation_id, kind, accepted, idempotent, promotion_state, k_bucket, advisory, v.
    * @see https://www.whisper.security/docs/cypher-api

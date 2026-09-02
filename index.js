@@ -3,8 +3,9 @@
 // whisper-id - the Whisper security graph, a routable IPv6 identity, and safe egress for
 // any Node agent. Dependency-free and two-tier (Postel): the graph's direct read verbs and
 // the identity checks run KEYLESS over plain fetch() (graph.assess("8.8.8.8") needs no key
-// at all); the control plane, raw Cypher, and the flows unlock with WHISPER_API_KEY; only
-// register/egress/ip lean on the `whisper` CLI (https://whisper.online).
+// at all); raw Cypher and the flows are sent the same way and the graph decides. Only the
+// control plane requires WHISPER_API_KEY, and only register/egress/ip lean on the
+// `whisper` CLI (https://whisper.online).
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 
@@ -35,7 +36,7 @@ async function run(args, { timeout = 120000, check = true } = {}) {
     if (err && err.code === "ENOENT") {
       throw new WhisperError(
         "the `whisper` CLI was not found on PATH. Install it with " +
-          "`curl get.whisper.online | sh` (see https://whisper.online)."
+          "`curl -fsSL https://get.whisper.online | sh` (see https://whisper.online)."
       );
     }
     const out = { stdout: err.stdout || "", stderr: err.stderr || "", code: typeof err.code === "number" ? err.code : 1 };
@@ -463,7 +464,7 @@ export async function agent(sel = {}, maybeOpts) {
 // origins, history, historyWhois, asset, lookupTorRelay, dbSchema) run KEYLESS - no key
 // at all, a rate-limited taste (~100/window) with real answers; a key (opts.apiKey or
 // WHISPER_API_KEY) lifts the limit. Raw Cypher (graph.query), the 15 multi-step flows,
-// and the submit write channel stay KEYED. Everything POSTs to the SAME endpoint the
+// and the submit write channel are proxied up the same way. Everything POSTs to the SAME endpoint the
 // control plane uses (https://graph.whisper.online/api/query), reusing resolveKey() so
 // there is one auth path, not two: a present key rides ONLY in the X-API-Key header, an
 // absent one sends NO auth header at all. It does NOT go through the whisper.agents()
@@ -508,17 +509,12 @@ function normalizeGraph(body) {
 // (plus .status/.retryAfter). Two-tier auth (Postel: liberal in what we accept): a keyless
 // method (`keyless: true`) NEVER throws for a missing key - with a key it runs unlimited,
 // without one the X-API-Key header is omitted entirely and the server serves the
-// rate-limited keyless taste. A keyed method with no key fails fast with a helpful error.
+// rate-limited keyless taste. No method is refused here; the graph decides what to answer.
 // The key is only ever sent in X-API-Key: never logged, never on argv, never returned.
-async function callGraph(cypher, params, opts = {}, methodName = "query", keyless = false) {
+async function callGraph(cypher, params, opts = {}) {
+  // Proxy up with whatever key there is, or none: the graph owns the keyless policy and
+  // decides what to answer. The SDK adds no gate the server did not ask for.
   const key = resolveKey(opts) || "";
-  if (!key && !keyless) {
-    throw new WhisperError(
-      `\`graph.${methodName}\` needs a Whisper API key: pass { apiKey } or set WHISPER_API_KEY. ` +
-        "(The direct read verbs - assess, identify, explain, origins, and friends - run keyless " +
-        "with no key at all; raw Cypher, the flows, and submit are keyed. See graph.recipes().)"
-    );
-  }
   const url = graphUrl();
   const timeout = opts.timeout || 60000;
   const ctrl = new AbortController();
@@ -619,14 +615,14 @@ function graphValue(name, value) {
 }
 
 /**
- * Run raw Cypher against the Whisper Security graph (keyed). The escape hatch under every
+ * Run raw Cypher against the Whisper Security graph. The escape hatch under every
  * typed method: `graph.query("MATCH (n) RETURN n LIMIT 1", {}, { apiKey })`. Returns the
  * full `{ columns, rows, statistics }` (rows are objects keyed by column name).
  * @see https://www.whisper.security/docs/cypher-api
  */
 async function graphQuery(cypher, params, opts = {}) {
   if (!cypher || !String(cypher).trim()) throw new WhisperError("graph.query() needs a Cypher string");
-  return callGraph(String(cypher), params || {}, opts, "query");
+  return callGraph(String(cypher), params || {}, opts);
 }
 
 /**
@@ -650,7 +646,7 @@ function graphRecipes() {
 
 // ── Flow runner (gallery/run, Server-Sent Events) ───────────────────────────────────
 // A flow entry is a multi-step read workflow orchestrated by the Whisper workflow runner:
-// POST {slug, value, paramValues} to the gallery/run endpoint (keyed, X-API-Key) and consume
+// POST {slug, value, paramValues} to the gallery/run endpoint (X-API-Key when set) and consume
 // the SSE stream. Each `step` event carries a step's bound Cypher + rows; the terminal
 // `complete` event carries the aggregate context. callFlow() collects the whole stream and
 // resolves to { slug, steps, complete, events } - one call, the full flow.
@@ -732,19 +728,15 @@ function parseSseRecord(record) {
   return { event, data };
 }
 
-// The one place that talks to the workflow runner. Requires a key (shared resolveKey),
-// POSTs {slug, value, paramValues}, consumes the SSE stream, and resolves to the collected
+// The one place that talks to the workflow runner. Sends the key when there is one (shared
+// resolveKey) and goes without when there is not, POSTs {slug, value, paramValues},
+// consumes the SSE stream, and resolves to the collected
 // { slug, steps, complete, events }. Flows are multi-step, so the default timeout is 5
 // minutes (override with opts.timeout). On an HTTP error, an `error` event, or a stream
 // that ends with no result at all, throws a WhisperError with the server's clear detail.
 async function callFlow(m, input, opts = {}) {
-  const key = resolveKey(opts);
-  if (!key) {
-    throw new WhisperError(
-      `\`graph.${m.name}\` needs a Whisper API key: pass { apiKey } or set WHISPER_API_KEY. ` +
-        "(The graph's direct read verbs run keyless; flows run keyed on the workflow runner.)"
-    );
-  }
+  // Flows proxy up like every other graph verb; the runner decides on the key.
+  const key = resolveKey(opts) || "";
   const body = flowWireBody(m, input);
   const url = flowRunUrl();
   const timeout = opts.timeout || 300000;
@@ -753,14 +745,17 @@ async function callFlow(m, input, opts = {}) {
   try {
     let res;
     try {
+      const headers = {
+        "Content-Type": "application/json",
+        Accept: "text/event-stream",
+        "User-Agent": UA,
+      };
+      // Present => keyed. ABSENT => keyless: an empty credential is not the same as no
+      // credential, and a server handed "" refuses instead of applying keyless policy.
+      if (key) headers["X-API-Key"] = key;
       res = await fetch(url, {
         method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          Accept: "text/event-stream",
-          "X-API-Key": key,
-          "User-Agent": UA,
-        },
+        headers,
         body: JSON.stringify(body),
         signal: ctrl.signal,
       });
@@ -868,7 +863,7 @@ function makeMapCall(m) {
     }
     const keys = Object.keys(bound).sort();
     const cypher = `CALL ${m.proc}({` + keys.map((k) => `${k}:$${k}`).join(", ") + "})";
-    return callGraph(cypher, bound, opts, m.name);
+    return callGraph(cypher, bound, opts);
   };
 }
 
@@ -886,9 +881,9 @@ for (const m of GRAPH_METHODS) {
   } else if (m.fields) {
     graph[m.name] = makeMapCall(m);
   } else if (m.input) {
-    graph[m.name] = async (value, opts = {}) => callGraph(m.cypher, { [m.input]: graphValue(m.name, value) }, opts, m.name, m.keyless);
+    graph[m.name] = async (value, opts = {}) => callGraph(m.cypher, { [m.input]: graphValue(m.name, value) }, opts);
   } else {
-    graph[m.name] = async (opts = {}) => callGraph(m.cypher, {}, opts, m.name, m.keyless);
+    graph[m.name] = async (opts = {}) => callGraph(m.cypher, {}, opts);
   }
   graph[m.name].docs = m.docs;
 }

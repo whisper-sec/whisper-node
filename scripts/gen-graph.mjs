@@ -187,18 +187,18 @@ function dtsDoc(r) {
   }
   lines.push("");
   if (r.mode === "flow") {
-    lines.push(`KEYED flow: streams Server-Sent Events from the workflow runner (slug "${r.slug}")`);
+    lines.push(`Flow: streams Server-Sent Events from the workflow runner (slug "${r.slug}")`);
     lines.push("and resolves to the collected { slug, steps, complete, events }.");
     if (r.inputs.length) lines.push(`Inputs: ${r.inputs.join(", ")}.${r.params.length ? ` Params: ${r.params.join(", ")}.` : ""}`);
   } else if (r.fields) {
-    lines.push(`KEYED write: CALL ${r.proc}({...}) with the payload fields bound as $-parameters.`);
+    lines.push(`Write: CALL ${r.proc}({...}) with the payload fields bound as $-parameters.`);
     lines.push(`Fields: ${r.fields.map(([, p]) => p).join(", ")} (${r.requires.join(", ")} required).`);
   } else if (r.keyless) {
-    lines.push("KEYLESS direct read: runs with NO key at all (a rate-limited taste, real");
+    lines.push("Direct read: answers with NO key at all (a rate-limited taste, real");
     lines.push("answers); pass a key ({ apiKey } or WHISPER_API_KEY) to lift the limit.");
     lines.push(`Cypher: ${r.cypher}`);
   } else {
-    lines.push(`KEYED. Cypher: ${r.cypher}`);
+    lines.push(`Direct read. Cypher: ${r.cypher}`);
   }
   if (r.returns.length && r.mode !== "flow") lines.push(`Returns columns: ${r.returns.join(", ")}.`);
   lines.push(`@see ${docsBase}${r.docs}`);

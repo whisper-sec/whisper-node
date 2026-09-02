@@ -1,6 +1,6 @@
 # whisper-id
 
-Three things for any Node agent, in one dependency-free package: query the **Whisper security graph** (billions of nodes joining the physical, network, naming, ownership and threat layers; live totals at nic.whisper.online/stats, Cypher), give the agent a routable **IPv6 identity** with safe **egress**, and drive the full **control plane**.
+Three things for any Node agent, in one dependency-free package: query the **Whisper security graph** (7.48B nodes and 39.5B edges joining the physical, network, naming, ownership and threat layers; live totals at nic.whisper.online/stats, Cypher), give the agent a routable **IPv6 identity** with safe **egress**, and drive the full **control plane**.
 
 ```sh
 npm i whisper-id
@@ -8,7 +8,7 @@ npm i whisper-id
 
 ## The security graph (keyless, zero setup)
 
-The Whisper graph knows who operates a host, its threat posture, its look-alikes, the real origins behind a CDN, WHOIS history, and 20+ named investigations. The **direct read verbs run with no key at all** (rate-limited taste, ~100/window). One import, real answers:
+The Whisper graph knows who operates a host, its threat posture, its look-alikes, the real origins behind a CDN, WHOIS history, and 15 named investigations. The **direct read verbs run with no key at all** (rate-limited taste, ~100/window). One import, real answers:
 
 ```js
 import { graph } from "whisper-id";                // no key needed for the read verbs
@@ -19,7 +19,7 @@ await graph.origins("cloudflare.com");             // the real origin IPs behind
 await graph.explain("paypal.com");                 // threat-feed score + why
 ```
 
-Set `WHISPER_API_KEY` (or pass `{ apiKey }`) to lift the rate limit and unlock **raw Cypher** and the **multi-step flows**:
+Set `WHISPER_API_KEY` (or pass `{ apiKey }`) to lift the keyless rate limit. Every verb is sent either way; the graph decides what to answer:
 
 ```js
 // raw Cypher, your own query, parameters bound as $-params (never string-built):
@@ -35,7 +35,7 @@ for (const r of graph.recipes()) {
 }
 ```
 
-Every verb maps to a catalog entry with its own docs page under [whisper.security/docs](https://www.whisper.security/docs) (e.g. [`assess`](https://www.whisper.security/docs/whisper-graph/procedures), [`identify`](https://www.whisper.security/docs/whisper-graph/procedures/identify)); `recipes()` carries the exact `docsUrl` for each, and the same URL sits on every method as `graph.identify.docs` and on its `@see` tag in your editor. The 13 direct reads are keyless; the 15 multi-step flows and the `submit` write channel are keyed. Full query reference: [whisper-catalog](https://github.com/whisper-sec/whisper-catalog).
+Every verb maps to a catalog entry with its own docs page under [whisper.security/docs](https://www.whisper.security/docs) (e.g. [`assess`](https://www.whisper.security/docs/whisper-graph/procedures), [`identify`](https://www.whisper.security/docs/whisper-graph/procedures/identify)); `recipes()` carries the exact `docsUrl` for each, and the same URL sits on every method as `graph.identify.docs` and on its `@see` tag in your editor. The 13 direct reads answer keyless; the 15 multi-step flows and the `submit` write channel are proxied up the same way and the graph decides. Full query reference: [whisper-catalog](https://github.com/whisper-sec/whisper-catalog).
 
 ## Identity + egress
 
@@ -78,12 +78,12 @@ if (await verify(addr)) console.log((await rdap(addr)).name);   // keyless, pure
 | `graph.asset(value)` | yes | Member ASNs of an AS-SET macro |
 | `graph.lookupTorRelay(value)` | yes | Is an IP a known Tor exit relay |
 | `graph.dbSchema()` | yes | Every node + relationship type in the graph, with counts and examples |
-| `graph.query(cypher, params)` | key | Raw Cypher escape hatch. -> the full `{ columns, rows, statistics }` |
+| `graph.query(cypher, params)` | yes | Raw Cypher escape hatch. -> the full `{ columns, rows, statistics }` |
 | `graph.submit({ kind, ...fields })` | key | Contribute an indicator observation or feedback (the write channel) |
 | `graph.recipes()` | yes (offline) | The whole catalog: `{ method, keyless, mode, summary, params, docsUrl }` per verb |
 
 Fifteen multi-step **workflow** methods (`attackPath`, `attackSurface`, `blastRadius`, `typosquat`,
-`indicator`, `routeHealth`, and 9 more) execute keyed on the Whisper workflow runner and stream
+`indicator`, `routeHealth`, and 9 more) execute on the Whisper workflow runner and stream
 Server-Sent Events; one call collects the whole run into `{ slug, steps, complete, events }`:
 
 ```js
@@ -165,8 +165,9 @@ transparently inside `withEgress`.
 
 Zero dependencies. The **graph read verbs**, the **keyless** checks, and the **control plane** are
 pure HTTP (Node ≥ 18's global `fetch`), with no CLI and nothing to install. Set `WHISPER_API_KEY`
-(or pass `{ apiKey }`) for the control plane and the keyed graph (raw Cypher + flows + `submit`);
-the graph read verbs, `verify`, and `rdap` need no key.
+(or pass `{ apiKey }`) for the control plane (`whisper.agents`), which always needs it. Graph calls
+never require a key from this SDK: they go up with one or without, and the graph decides what to
+answer. A key lifts the keyless rate limit. `verify` and `rdap` need no key either.
 
 Only **egress** and the CLI-backed calls (`register`, `egress`, `withEgress`, `ip`) need the
 `whisper` CLI on your `PATH`:

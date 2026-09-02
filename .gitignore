@@ -1,3 +1,7 @@
 node_modules/
 *.tgz
 npm-debug.log*
+
+# Zero runtime dependencies: no lockfile is committed, so the dep-audit workflow
+# resolves the tree fresh before auditing (see .github/workflows/dep-audit.yml).
+package-lock.json

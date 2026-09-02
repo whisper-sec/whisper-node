@@ -2,9 +2,10 @@
 // Copyright (c) 2026 viaGraph B.V. (Whisper Security)
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { writeFileSync, chmodSync, mkdtempSync } from "node:fs";
+import { writeFileSync, chmodSync, mkdtempSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { join, dirname } from "node:path";
+import { fileURLToPath } from "node:url";
 import { register, egress, withEgress, verify, verifyDetails, rdap, egressIp, ip, WhisperError, firstAddr, list, policy, logs, revoke, identity, agent, graph } from "../index.js";
 
 // A fake `whisper` so tests exercise the real execFile path with no live box.
@@ -228,8 +229,9 @@ test("revoke rejects an empty selector", async () => {
 // ── Graph namespace (two-tier Cypher, /api/query contract) ──────────────────────────
 // The graph envelope: {columns, rows:[{col:val}], statistics}. Rows are already keyed
 // objects (NOT the whisper.agents row-envelope). stubControl (above) captures lastReq.
-// Two-tier: the 13 direct read verbs run keyless (no key -> no X-API-Key header, no
-// throw); raw query, the flows, and submit are keyed (no key -> a helpful throw).
+// Every graph verb proxies up with a key or without one; the graph owns the keyless
+// policy and decides what to answer. The SDK never refuses a graph call on the caller's
+// behalf. Only the control plane (whisper.agents) requires a key client-side.
 const graphEnvelope = {
   columns: ["host", "vendor_id", "canonical_name"],
   rows: [{ host: "api.openai.com", vendor_id: "openai", canonical_name: "OpenAI" }],
@@ -326,13 +328,41 @@ test("graph two-tier: a keyless read verb with NO key does not throw and omits t
   process.env.WHISPER_API_KEY = saved;
 });
 
-test("graph two-tier: keyed verbs (raw query, submit, flows) without a key throw a helpful error", async () => {
+test("graph flow: a keyless call sends NO X-API-Key header at all", async () => {
+  // An empty credential is not the same as no credential. A server handed "" refuses
+  // instead of applying keyless policy, so the header must be absent, not blank.
+  const savedKey = process.env.WHISPER_API_KEY;
+  const realFetch = globalThis.fetch;
+  let seen = null;
+  globalThis.fetch = async (_url, init) => {
+    seen = Object.keys(init.headers).map((h) => h.toLowerCase());
+    throw new Error("intercepted");
+  };
+  try {
+    delete process.env.WHISPER_API_KEY;
+    try { await graph.typosquat("paypal.com"); } catch (e) {}
+    assert.ok(!seen.includes("x-api-key"), "keyless flow must omit X-API-Key");
+    seen = null;
+    try { await graph.typosquat("paypal.com", { apiKey: "whisper_live_K" }); } catch (e) {}
+    assert.ok(seen.includes("x-api-key"), "keyed flow must send X-API-Key");
+  } finally {
+    globalThis.fetch = realFetch;
+    if (savedKey !== undefined) process.env.WHISPER_API_KEY = savedKey;
+  }
+});
+
+test("graph: no verb is gated client-side; every one is sent for the graph to decide", async () => {
+  // The SDK must not refuse a graph call on the caller's behalf. raw query, submit and the
+  // flows were gated here once; that was self-inflicted friction. They now go out with an
+  // empty key and the graph answers or refuses. Only whisper.agents still requires a key.
   const saved = process.env.WHISPER_API_KEY;
   delete process.env.WHISPER_API_KEY;
-  const keyedThrow = (err) => err instanceof WhisperError && /needs a Whisper API key/.test(err.message) && /keyless/.test(err.message);
-  await assert.rejects(() => graph.query("CALL db.schema()"), keyedThrow);
-  await assert.rejects(() => graph.submit({ kind: "indicator", identifier_kind: "ip", value: "203.0.113.5" }), keyedThrow);
-  await assert.rejects(() => graph.typosquat("paypal.com"), keyedThrow);
+  stubControl(200, graphEnvelope);
+  await graph.query("CALL db.schema()");
+  assert.equal(lastReq.init.headers["X-API-Key"], undefined, "keyless: no X-API-Key header");
+  stubControl(200, graphEnvelope);
+  await graph.submit({ kind: "indicator", identifier_kind: "ip", value: "203.0.113.5" });
+  assert.ok(lastReq.sent.query.includes("whisper.submit"), "submit was sent, not refused");
   process.env.WHISPER_API_KEY = saved;
 });
 
@@ -436,11 +466,9 @@ test("graph flow: an error event with no complete rejects with the detail (event
   );
 });
 
-test("graph flow: needs a key, and an empty bare input is rejected with a clear error", async () => {
-  const saved = process.env.WHISPER_API_KEY;
-  delete process.env.WHISPER_API_KEY;
-  await assert.rejects(() => graph.typosquat("paypal.com"), /needs a Whisper API key/);
-  process.env.WHISPER_API_KEY = saved;
+test("graph flow: an empty bare input is rejected with a clear error", async () => {
+  // Input validation is ours (fail fast, clear message). Access is not: a flow with no key
+  // is still sent, and the flow runner decides. See the no-client-side-gate test above.
   await assert.rejects(() => graph.typosquat("  "), /needs a value/);
 });
 
@@ -457,4 +485,38 @@ test("graph: every method carries its canonical docs URL as .docs (docsBase + do
     if (typeof fn !== "function") continue;
     assert.match(fn.docs, /^https:\/\/www\.whisper\.security\/docs\//, `graph.${name} has no docs link`);
   }
+});
+
+// ---------------------------------------------------------------------------
+// The graph size this README states.
+//
+// The opening line is the first claim a reader meets on the package page, and it
+// once carried a figure roughly half the real one. Read the live totals from
+// https://nic.whisper.online/stats/data.json, which is keyless and public.
+//
+// The guard is a FLOOR rather than an exact match, and it is deliberately
+// offline: it cannot fail because a network is down, and it cannot go stale as
+// the graph grows. It fails only if the stated size drops far below what the
+// graph has already reached.
+// ---------------------------------------------------------------------------
+test("the README states the graph size the graph actually has", () => {
+  const here = dirname(fileURLToPath(import.meta.url));
+  const body = readFileSync(join(here, "..", "README.md"), "utf8");
+  // The control: the file really was read, so an empty read cannot pass.
+  assert.ok(body.includes("Whisper security graph"), "README did not read as expected");
+
+  const nodes = body.match(/([\d.]+)B nodes/);
+  // Liberal in the word: "edges" and "relationships" are the same quantity, and a
+  // guard that only knew one of them would read the other as "no figure at all".
+  const edges = body.match(/([\d.]+)B (?:edges|relationships)/);
+  assert.ok(nodes, "the README no longer states a node count");
+  assert.ok(edges, "the README no longer states an edge count");
+  assert.ok(
+    parseFloat(nodes[1]) >= 7.0,
+    `README states ${nodes[1]}B nodes; the graph passed 7.0B. Read the live figure from https://nic.whisper.online/stats/data.json.`,
+  );
+  assert.ok(
+    parseFloat(edges[1]) >= 39.0,
+    `README states ${edges[1]}B edges; the graph passed 39.0B. Read the live figure from https://nic.whisper.online/stats/data.json.`,
+  );
 });
