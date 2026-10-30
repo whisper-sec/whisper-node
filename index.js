@@ -16,12 +16,51 @@ const HOSTPORT_RE = /127\.0\.0\.1:(\d{2,5})/;
 const PROXY_VARS = ["HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY", "http_proxy", "https_proxy", "all_proxy"];
 const UA = "whisper-id-node"; // client identifier for the keyless + control HTTP calls
 
-/** Error thrown when a `whisper` invocation fails, or the CLI is not installed. */
+/**
+ * Error thrown when a `whisper` invocation fails, the CLI is not installed, or the control
+ * plane refuses a call. A control-plane refusal carries the server's own `.code` (for example
+ * "NOT_FOUND" or "FORBIDDEN"), `.status` and `.retryable` when the server said them.
+ */
 export class WhisperError extends Error {
   constructor(message) {
     super(message);
     this.name = "WhisperError";
   }
+}
+
+/**
+ * The control plane understood the call and found nothing of yours to act on. From
+ * revoke() it means nothing was revoked: the agent was revoked already, or it is not in your
+ * account. That is an answer, not a fault, so never retry it. `.code` is "NOT_FOUND",
+ * `.status` is 404, `.retryable` is false, and the message is the server's own.
+ */
+export class NotFoundError extends WhisperError {
+  constructor(message) {
+    super(message);
+    this.name = "NotFoundError";
+    this.code = "NOT_FOUND";
+    this.status = 404;
+    this.retryable = false;
+  }
+}
+
+// NOT_FOUND is read off the code, on a 404 or with no error status; never off a bare 404,
+// which is a mistyped control URL or a proxy in the way rather than a statement about the agent.
+function isNotFound(e, status) {
+  if (!e || typeof e !== "object") return false;
+  if (String(e.code || "").trim().toUpperCase() !== "NOT_FOUND") return false;
+  return status === 404 || !status || status < 400;
+}
+
+// An older plane's ok:true revoke row whose status is not_found (directly or under item).
+// Only the first of status/state present is read.
+function revokeRowNotFound(rec) {
+  if (!rec || typeof rec !== "object") return false;
+  const row = rec.item && typeof rec.item === "object" ? rec.item : rec;
+  for (const k of ["status", "state"]) {
+    if (typeof row[k] === "string") return row[k].trim().toLowerCase() === "not_found";
+  }
+  return false;
 }
 
 function bin() {
@@ -309,7 +348,8 @@ function resolveKey(opts) {
 
 // The one place that talks to the control plane. Builds the injection-proof query, POSTs
 // it with the key in X-API-Key, decodes either envelope shape, and throws WhisperError
-// (carrying the server's helpful `detail`, plus .status/.retryAfter) on ok:false. The key
+// (carrying the server's message, plus .code/.status/.retryable/.retryAfter) on ok:false,
+// a NotFoundError when the code is NOT_FOUND. The key
 // is never logged, never placed on argv, never returned.
 async function callControl(op, args, opts = {}) {
   const key = resolveKey(opts);
@@ -350,8 +390,13 @@ async function callControl(op, args, opts = {}) {
   const env = decodeEnvelope(body, res.status);
   if (!env.ok) {
     const e = env.error || {};
-    const werr = new WhisperError(e.detail || e.title || e.type || `control plane returned HTTP ${env.status}`);
+    // The plane's own errors are {code, message, retryable}; RFC 7807 ones use detail/title.
+    const msg = e.detail || e.message || e.title || e.type || `control plane returned HTTP ${env.status}`;
+    if (isNotFound(e, env.status)) throw new NotFoundError(msg);
+    const werr = new WhisperError(msg);
     werr.status = env.status;
+    if (e.code) werr.code = String(e.code);
+    if (typeof e.retryable === "boolean") werr.retryable = e.retryable;
     if (env.retryAfter != null) werr.retryAfter = env.retryAfter;
     if (e.suggestions) werr.suggestions = e.suggestions;
     throw werr;
@@ -403,15 +448,30 @@ export async function logs(opts = {}) {
 
 /**
  * Fully revoke an agent - IRREVERSIBLE (op:revoke; needs admin:dns). Liberal input:
- * `revoke("agent-id")`, `revoke("2a04:2a01:...")`, or `revoke({ agent, apiKey })`.
- * → `{ status, ... }`.
+ * `revoke("agent-id")`, `revoke("2a04:2a01:...")`, `revoke("my-label")`, or
+ * `revoke({ agent, apiKey })`. → `{ status, ... }`.
+ *
+ * Throws NotFoundError when nothing was revoked: no agent of yours matches, because it was
+ * revoked already or is not in your account. Do not retry that; list() shows what is left.
+ * Both ways the plane says it throw it: the NOT_FOUND error of current servers, and the
+ * `status: not_found` row older ones answered with ok:true.
  */
 export async function revoke(target, maybeOpts) {
   const o = typeof target === "string" ? maybeOpts || {} : target || {};
   const sel = typeof target === "string" ? target : o.agent;
   if (!sel || !String(sel).trim()) throw new WhisperError("revoke() needs an agent id or /128 address");
-  const recs = await callControl("revoke", { agent: String(sel).trim() }, o);
+  const selector = String(sel).trim();
+  const recs = await callControl("revoke", { agent: selector }, o);
   const rec = recs.length ? recs[0] : {};
+  if (revokeRowNotFound(rec)) {
+    const row = rec.item && typeof rec.item === "object" ? rec.item : rec;
+    const said = [row.message, row.detail].find((v) => typeof v === "string" && v.trim());
+    throw new NotFoundError(
+      said ||
+        `nothing was revoked: no agent of yours matches ${JSON.stringify(selector)}. ` +
+          "If you revoked it before, there is nothing left to revoke; list() shows what is left"
+    );
+  }
   return { status: rec.status || rec.state || "submitted", ...rec };
 }
 

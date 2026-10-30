@@ -1,6 +1,30 @@
 // SPDX-License-Identifier: MIT
 // Copyright (c) 2026 viaGraph B.V. (Whisper Security)
-export declare class WhisperError extends Error {}
+/**
+ * Thrown when a `whisper` invocation fails, the CLI is missing, or the control plane refuses
+ * a call. A control-plane refusal carries the server's `code`, `status` and `retryable`.
+ */
+export declare class WhisperError extends Error {
+  /** The server's error code, e.g. "NOT_FOUND" or "FORBIDDEN", when it gave one. */
+  code?: string;
+  /** The effective HTTP/envelope status of a control-plane refusal. */
+  status?: number;
+  /** Whether the server says retrying could succeed. */
+  retryable?: boolean;
+  /** Seconds the server asked the caller to wait (rate limits). */
+  retryAfter?: number;
+  suggestions?: string[];
+}
+
+/**
+ * Nothing of yours matched: from `revoke()`, nothing was revoked (revoked already, or not in
+ * your account). An answer, not a fault: never retry it.
+ */
+export declare class NotFoundError extends WhisperError {
+  code: "NOT_FOUND";
+  status: 404;
+  retryable: false;
+}
 
 export interface Agent {
   /** The routable IPv6 /128 - both the identity and the auth. */
@@ -55,7 +79,8 @@ export function firstAddr(obj: unknown): string | null;
 // The governance half of the two-tier surface: pure `fetch` to the control endpoint, so
 // it runs anywhere (serverless, edge, a plain server). The key is read from `opts.apiKey`
 // or `WHISPER_API_KEY` and sent only in the `X-API-Key` header. On failure these throw a
-// `WhisperError` carrying the server's `detail` (and `.status` / `.retryAfter`).
+// `WhisperError` carrying the server's message (and `.code` / `.status` / `.retryable` /
+// `.retryAfter`); a `NotFoundError` when the server's code is NOT_FOUND.
 
 /** Common options for every keyed control call. */
 export interface ControlOptions {
@@ -142,7 +167,10 @@ export function list(opts?: ListOptions): Promise<AgentItem[]>;
 export function policy(opts?: PolicyOptions): Promise<PolicyEntry[]>;
 /** Query recent DNS/conn/alloc activity from warm storage. → event records. */
 export function logs(opts?: LogsOptions): Promise<LogEvent[]>;
-/** Fully revoke an agent - IRREVERSIBLE (admin:dns). → `{ status, ... }`. */
+/**
+ * Fully revoke an agent - IRREVERSIBLE (admin:dns). → `{ status, ... }`. Throws
+ * `NotFoundError` when nothing was revoked (revoked already, or not in your account).
+ */
 export function revoke(agent: string, opts?: ControlOptions): Promise<{ status: string; [k: string]: unknown }>;
 export function revoke(opts: RevokeOptions): Promise<{ status: string; [k: string]: unknown }>;
 /** Allocate your own /128 (or release with `{release:true,address}`). → `{agent,address,fqdn,ptr,state}`. */

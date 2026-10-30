@@ -114,7 +114,10 @@ Run anywhere `fetch` runs (Cloudflare Workers, Vercel, Deno, Lambda, the browser
 Pure `fetch` to the control endpoint, with no `whisper` CLI and no child process. The key comes from
 `opts.apiKey` or `WHISPER_API_KEY` and is sent only in the `X-API-Key` header (never on argv,
 never logged). Each also takes `{ apiKey, timeout }`. On failure they throw a `WhisperError`
-carrying the server's `detail` (plus `.status` / `.retryAfter`).
+carrying the server's message (plus `.code` / `.status` / `.retryable` / `.retryAfter`). A
+`revoke` that matches nothing of yours (revoked already, or not in your account) throws
+`NotFoundError` (`.code` `NOT_FOUND`, `.status` 404, not retryable): nothing was revoked, so
+do not retry it.
 
 | Call | Does |
 |------|------|

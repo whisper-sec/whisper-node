@@ -6,7 +6,7 @@ import { writeFileSync, chmodSync, mkdtempSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
-import { register, egress, withEgress, verify, verifyDetails, rdap, egressIp, ip, WhisperError, firstAddr, list, policy, logs, revoke, identity, agent, graph } from "../index.js";
+import { register, egress, withEgress, verify, verifyDetails, rdap, egressIp, ip, WhisperError, NotFoundError, firstAddr, list, policy, logs, revoke, identity, agent, graph } from "../index.js";
 
 // A fake `whisper` so tests exercise the real execFile path with no live box.
 const dir = mkdtempSync(join(tmpdir(), "wid-"));
@@ -220,6 +220,60 @@ test("control calls require a key (opts.apiKey or WHISPER_API_KEY)", async () =>
   await list({ apiKey: "whisper_live_VIAOPTS" });
   assert.equal(lastReq.init.headers["X-API-Key"], "whisper_live_VIAOPTS");
   process.env.WHISPER_API_KEY = saved;
+});
+
+// Nothing revoked: the plane says it two ways, and both must throw NotFoundError
+// with the server's own message. Never a bare 404, never a success.
+const notFoundErr = { code: "NOT_FOUND", message: "nothing was revoked: no agent of yours matches 'ag_gone'", retryable: false };
+const rowCols = ["op", "ok", "status", "result", "error", "retry_after", "elapsed_ms"];
+const isNotFoundErr = (err) =>
+  err instanceof NotFoundError && err instanceof WhisperError &&
+  err.code === "NOT_FOUND" && err.status === 404 && err.retryable === false;
+
+for (const [name, status, body] of [
+  ["front door, object row", 200, { columns: rowCols, rows: [{ op: "revoke", ok: false, status: 404, result: null, error: notFoundErr, retry_after: null, elapsed_ms: 3 }] }],
+  ["front door, positional row", 200, { columns: rowCols, rows: [["revoke", false, 404, null, notFoundErr, null, 3]] }],
+  ["flat envelope on HTTP 404", 404, { ok: false, status: 404, result: null, error: notFoundErr }],
+]) {
+  test(`revoke: NOT_FOUND (${name}) throws NotFoundError with the server's message`, async () => {
+    stubControl(status, body);
+    await assert.rejects(() => revoke("ag_gone"), (err) => isNotFoundErr(err) && err.message === notFoundErr.message);
+  });
+}
+
+for (const [name, cols, row] of [
+  ["status", ["agent", "status"], ["ag_gone", "not_found"]],
+  ["under item", ["item"], [{ agent: "ag_gone", status: "NOT_FOUND" }]],
+]) {
+  test(`revoke: an older plane's ok row with not_found (${name}) throws NotFoundError`, async () => {
+    stubControl(200, { ok: true, status: 200, result: { columns: cols, rows: [row] } });
+    await assert.rejects(() => revoke("ag_gone"), (err) => isNotFoundErr(err) && /nothing was revoked.*ag_gone/.test(err.message));
+  });
+}
+
+test("revoke: a bare 404 with no NOT_FOUND code is a plain WhisperError, not NotFoundError", async () => {
+  stubControl(404, { title: "Not Found", status: 404, detail: "no such route" });
+  await assert.rejects(() => revoke("ag_gone"), (err) => err instanceof WhisperError && !(err instanceof NotFoundError) && err.message === "no such route");
+});
+
+test("revoke: the NOT_FOUND code on a 403 is not NotFoundError", async () => {
+  stubControl(403, { ok: false, status: 403, error: { code: "NOT_FOUND", message: "odd", retryable: false } });
+  await assert.rejects(() => revoke("ag_gone"), (err) => err instanceof WhisperError && !(err instanceof NotFoundError) && err.status === 403);
+});
+
+test("control errors carry the server's code, message and retryable", async () => {
+  stubControl(200, { columns: rowCols, rows: [{ op: "policy", ok: false, status: 403, result: null, error: { code: "FORBIDDEN", message: "this key lacks dns:policy:write", retryable: false } }] });
+  await assert.rejects(
+    () => policy({ default: "deny" }),
+    (err) => err instanceof WhisperError && err.code === "FORBIDDEN" && err.status === 403 && err.retryable === false && err.message === "this key lacks dns:policy:write"
+  );
+});
+
+test("revoke: a real revoke in the front-door row still resolves", async () => {
+  stubControl(200, { columns: rowCols, rows: [{ op: "revoke", ok: true, status: 200, result: { columns: ["agent", "status"], rows: [["ag_1", "revoked"]] }, error: null }] });
+  const r = await revoke("ag_1");
+  assert.equal(r.status, "revoked");
+  assert.equal(r.agent, "ag_1");
 });
 
 test("revoke rejects an empty selector", async () => {
